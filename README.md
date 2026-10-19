@@ -32,7 +32,7 @@ Trainings lassen sich ohne iPhone im Studio auf der Apple Watch erfassen: Ein Ku
 
 1. Repo → **Settings → Pages → Build and deployment → Source: „GitHub Actions“**.
 2. Jeder Push auf `main` deployt automatisch (`.github/workflows/pages.yml`).
-3. URL: `https://dertika.github.io/fitnessstudiotracking/`
+3. URL: `https://dertika.github.io/gym-tracker/`
 
 ## Auf dem iPhone installieren
 
