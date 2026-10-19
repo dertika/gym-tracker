@@ -8,6 +8,7 @@ PWA zum Tracken des Trainings im Fitnessstudio:
 - **Verlauf** pro Gerät mit Diagramm (Höchstgewicht, geschätztes 1RM oder Volumen), Rekorden und Fortschritt in %.
 - **Statistik** (📊): Trainingstage diesen Monat, Ø pro Woche, Wochen-Serie, Trainingskalender (Heatmap), Trainingstage und Volumen pro Woche, Fortschritt pro Gerät.
 - **Kategorien** (z. B. Oberkörper, Beine; mehrere pro Gerät) zum Filtern der Geräteliste und für eigene Watch-Kurzbefehle pro Trainingstag.
+- **Freie Gewichte**: Übungen ohne Gerät mit Kurzhanteln (kg pro Hand), Langhantel (Scheiben pro Seite + Stange) oder Körpergewicht (nur Wiederholungen).
 - **Stufen-Geräte**: Pro Gerät einstellbar, ob die Belastung in kg oder als Stufe (z. B. 1–12 im Zirkel) erfasst wird.
 - **Rekord-Hinweis** beim Speichern, wenn ein Training einen persönlichen Rekord bricht.
 - **Offline-fähig**, alle Daten nur lokal auf dem Gerät (IndexedDB).
