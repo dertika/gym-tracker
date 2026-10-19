@@ -16,6 +16,7 @@ export function e1rm(set) {
 export const sessionMaxWeight = (s) => Math.max(0, ...s.sets.map((x) => x.weight ?? 0));
 export const sessionVolume = (s) => s.sets.reduce((sum, x) => sum + (x.reps ?? 0) * (x.weight ?? 0), 0);
 export const sessionBestE1rm = (s) => Math.max(0, ...s.sets.map(e1rm));
+export const sessionMaxReps = (s) => Math.max(0, ...s.sets.map((x) => x.reps ?? 0));
 export const sessionTotalReps = (s) => s.sets.reduce((sum, x) => sum + (x.reps ?? 0), 0);
 
 // ---- Datum ----
@@ -155,15 +156,19 @@ export function progress(sessions, metric = sessionBestE1rm) {
 }
 
 // Welche Rekorde bricht `session` gegenüber `previous`? Ohne Vorgeschichte gibt es keine Rekorde.
-// Bei Stufen-Geräten (`level`) zählt nur die höchste Stufe; 1RM und Volumen haben dort keine Aussage.
-export function newRecords(session, previous, { level = false } = {}) {
+// mode 'kg': Gewicht, 1RM und Volumen; 'level': nur die höchste Stufe; 'reps': nur die meisten Wdh. in einem Satz.
+export function newRecords(session, previous, { mode = 'kg' } = {}) {
   const prev = previous.filter((s) => s.id !== session.id && s.sets.length);
   if (!prev.length) return [];
   const old = machineRecords(prev);
   const cur = machineRecords([session]);
   const out = [];
+  if (mode === 'reps') {
+    if (cur.mostReps && old.mostReps && cur.mostReps.value > old.mostReps.value) out.push({ type: 'reps', value: cur.mostReps.value });
+    return out;
+  }
   if (cur.heaviest && old.heaviest && cur.heaviest.value > old.heaviest.value) out.push({ type: 'heaviest', value: cur.heaviest.value });
-  if (level) return out;
+  if (mode === 'level') return out;
   if (cur.bestE1rm && old.bestE1rm && cur.bestE1rm.value > old.bestE1rm.value + 0.01) out.push({ type: 'e1rm', value: cur.bestE1rm.value });
   if (cur.volume && old.volume && cur.volume.value > old.volume.value) out.push({ type: 'volume', value: cur.volume.value });
   return out;

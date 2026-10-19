@@ -4,6 +4,8 @@
 //   GT1;<Geräte-ID>;<JJJJ-MM-TT>;12x40/10x42,5/8x45
 // Sätze werden mit „/“ getrennt, damit Dezimalkommas (42,5) eindeutig bleiben.
 
+import { loadType, barWeight } from './load.js';
+
 const fmt = (n) => String(n).replace('.', ',');
 
 // Geräteliste für den Watch-Kurzbefehl: { "<Name>": { id, info } }.
@@ -18,12 +20,22 @@ export function buildWatchConfig(machines, lastSessionByMachine = {}, category =
     const blocks = [];
     const filled = m.settings.filter((s) => String(s.value ?? '').trim());
     if (filled.length) blocks.push(filled.map((s) => `${s.label}: ${s.value}`).join('\n'));
-    const level = m.load?.type === 'level';
-    if (level) blocks.push(`Eingabe: Stufe 1–${m.load.max ?? 12} (bei „Gewicht“ eingeben)`);
+    const type = loadType(m);
+    const hint = {
+      level: `Eingabe: Stufe 1–${m.load?.max ?? 12} (bei „Gewicht“ eingeben)`,
+      dumbbell: 'Eingabe: kg pro Hand',
+      barbell: `Eingabe: Gesamtgewicht inkl. Stange (${fmt(barWeight(m))} kg)`,
+      bodyweight: 'Eingabe: Gewicht 0',
+    }[type];
+    if (hint) blocks.push(hint);
+    const value = (w) =>
+      ({ level: `Stufe ${fmt(w)}`, dumbbell: `2 × ${fmt(w)} kg`, bodyweight: '' })[type] ?? `${fmt(w)} kg`;
     const last = lastSessionByMachine[m.id];
     if (last) {
       const [, mo, d] = last.date.split('-');
-      const sets = last.sets.map((s, i) => `${i + 1}) ${fmt(s.reps ?? 0)} × ${level ? `Stufe ${fmt(s.weight ?? 0)}` : `${fmt(s.weight ?? 0)} kg`}`);
+      const sets = last.sets.map((s, i) =>
+        type === 'bodyweight' ? `${i + 1}) ${fmt(s.reps ?? 0)} Wdh.` : `${i + 1}) ${fmt(s.reps ?? 0)} × ${value(s.weight ?? 0)}`
+      );
       blocks.push([`Zuletzt (${d}.${mo}.):`, ...sets].join('\n'));
     }
     out[name] = { id: m.id, info: blocks.join('\n\n') || 'Keine Einstellungen' };

@@ -3,6 +3,7 @@ import { Scanner, decodeImageFile } from './scanner.js';
 import * as st from './stats.js';
 import * as watch from './watch.js';
 import * as sync from './sync.js';
+import * as L from './load.js';
 
 const view = document.getElementById('view');
 const titleEl = document.getElementById('title');
@@ -69,7 +70,7 @@ const pref = {
 };
 
 function setsSummary(sets, load = KG) {
-  return sets.map((s) => `${fmtNum(s.reps)}×${load.level ? 'St. ' : ''}${fmtNum(s.weight)}`).join(' · ');
+  return sets.map((s) => (load.hasWeight ? `${fmtNum(s.reps)}×${load.short(s.weight)}` : `${fmtNum(s.reps)} Wdh.`)).join(' · ');
 }
 
 const maxWeight = st.sessionMaxWeight;
@@ -79,20 +80,49 @@ const fmtPct = (p) => (p === null ? '–' : `${p > 0 ? '+' : p < 0 ? '−' : '±
 const fmtKg = (n) => `${fmtNum(Math.round(n * 10) / 10)} kg`;
 const fmtVol = (n) => (n >= 10000 ? `${fmtNum(Math.round(n / 100) / 10)} t` : `${fmtNum(Math.round(n))} kg`);
 
-// Belastungsart eines Geräts: Gewicht in kg (Standard) oder Stufe 1…max (z. B. Zirkelgeräte).
-const KG = { level: false, unit: 'kg', fmt: fmtKg, step: 2.5, min: 0, max: Infinity };
+// Belastungsart eines Geräts bzw. einer Übung (siehe js/load.js) mit allem, was Eingabe und Anzeige brauchen.
+//   fmt(w)       Anzeige eines gespeicherten Werts, z. B. „40 kg“, „Stufe 7“, „2 × 12,5 kg“
+//   short(w)     Kurzform für Satzlisten, z. B. „40“, „St. 7“, „2×12,5“
+//   unit         Beschriftung des Eingabefelds; toInput/fromInput rechnen zwischen Feld und gespeichertem Wert
+const r1 = (n) => fmtNum(Math.round(n * 100) / 100);
+const KG = {
+  type: 'kg', mode: 'kg', hasWeight: true, level: false, unit: 'kg', step: 2.5, min: 0, max: Infinity,
+  fmt: fmtKg, short: (w) => r1(w), toInput: (w) => w, fromInput: (v) => v,
+};
 function loadOf(m) {
-  if (m?.load?.type !== 'level') return KG;
-  const max = Math.max(1, Math.round(m.load.max) || 12);
-  return { level: true, unit: 'Stufe', fmt: (v) => `Stufe ${fmtNum(Math.round(v * 10) / 10)}`, step: 1, min: 1, max };
+  const type = L.loadType(m);
+  if (type === 'level') {
+    const max = Math.max(1, Math.round(m.load.max) || 12);
+    return { ...KG, type, mode: 'level', level: true, unit: 'Stufe', step: 1, min: 1, max, fmt: (v) => `Stufe ${r1(v)}`, short: (v) => `St. ${r1(v)}` };
+  }
+  if (type === 'dumbbell') {
+    return { ...KG, type, unit: 'kg/Hand', step: 1, fmt: (v) => `2 × ${fmtKg(v)}`, short: (v) => `2×${r1(v)}` };
+  }
+  if (type === 'barbell') {
+    const bar = L.barWeight(m);
+    return {
+      ...KG, type, bar, unit: 'kg/Seite', step: 1.25,
+      toInput: (w) => Math.max(0, (w - bar) / 2),
+      fromInput: (v) => bar + 2 * v,
+    };
+  }
+  if (type === 'bodyweight') {
+    return { ...KG, type, mode: 'reps', hasWeight: false, unit: '', step: 0, fmt: (v) => `${fmtNum(v)} Wdh.`, short: () => '' };
+  }
+  return KG;
 }
-const isLevelMachine = (m) => loadOf(m).level;
+// Bester Wert eines Trainings für Listen: höchstes Gewicht/Stufe bzw. meiste Wdh. bei Körpergewicht.
+const bestOf = (load, s) => (load.hasWeight ? load.fmt(maxWeight(s)) : load.fmt(st.sessionMaxReps(s)));
+// Volumen in kg je nach Typ (Kurzhanteln ×2, Stufe/Körpergewicht 0).
+const volumeOfMachine = (m) => (s) => st.sessionVolume(s) * L.volumeFactor(m);
+const progressMetric = (load) => (load.level ? st.sessionMaxWeight : load.mode === 'reps' ? st.sessionMaxReps : st.sessionBestE1rm);
 
 // ---------- Router ----------
 
 const routes = [
   [/^#?\/?$/, home],
   [/^#\/scan$/, scan],
+  [/^#\/new\?free=1$/, () => editMachine(null, '', { free: true })],
   [/^#\/new(?:\?qr=(.*))?$/, (qr) => editMachine(null, qr ? decodeURIComponent(qr) : '')],
   [/^#\/m\/([^/]+)$/, machineDetail],
   [/^#\/m\/([^/]+)\/edit$/, (id) => editMachine(id)],
@@ -161,10 +191,16 @@ async function home() {
           <a href="#/m/${m.id}">
             <div class="li-main">
               <strong>${esc(m.name)}</strong>
-              <small>${m.settings.length ? esc(m.settings.map((s) => `${s.label}: ${s.value}`).join(' · ')) : 'Keine Einstellungen'}</small>
+              ${
+                m.settings.length
+                  ? `<small>${esc(m.settings.map((s) => `${s.label}: ${s.value}`).join(' · '))}</small>`
+                  : L.FREE_TYPES.includes(L.loadType(m))
+                    ? ''
+                    : '<small>Keine Einstellungen</small>'
+              }
               ${m.categories?.length ? `<small class="cats">${esc(m.categories.join(' · '))}</small>` : ''}
             </div>
-            <div class="li-side">${last[m.id] ? `<small>${fmtDate(last[m.id].date)}</small><span>${loadOf(m).fmt(maxWeight(last[m.id]))}</span>` : ''}</div>
+            <div class="li-side">${last[m.id] ? `<small>${fmtDate(last[m.id].date)}</small><span>${bestOf(loadOf(m), last[m.id])}</span>` : ''}</div>
           </a>
         </li>`
         )
@@ -174,6 +210,7 @@ async function home() {
     ${sessions.length ? `<a class="btn ghost" href="#/stats">📊 Statistik</a>` : ''}
     ${machines.length ? `<a class="btn ghost" href="#/inbox">⌚ Watch-Einträge einfügen</a>` : ''}
     <a class="btn ghost" href="#/new">+ Gerät ohne QR-Code anlegen</a>
+    <a class="btn ghost" href="#/new?free=1">+ Freie Übung anlegen (Hanteln, Körpergewicht)</a>
   `;
 
   const search = document.getElementById('search');
@@ -286,19 +323,22 @@ function lineChart(pts, label, fmt = fmtKg) {
 
 function recordsCard(sessions, load) {
   const r = st.machineRecords(sessions);
-  const p = st.progress(sessions, load.level ? st.sessionMaxWeight : st.sessionBestE1rm);
+  const p = st.progress(sessions, progressMetric(load));
+  const reps = load.mode === 'reps';
+  const mostInSession = reps ? sessions.reduce((a, s) => (st.sessionTotalReps(s) > (a?.value ?? 0) ? { value: st.sessionTotalReps(s), date: s.date } : a), null) : null;
   const row = (label, value, date) =>
     value ? `<div><dt>${label}</dt><dd>${value}</dd><small>${fmtDate(date)}</small></div>` : '';
   return `
     <section class="card">
       <h2>Rekorde</h2>
       <dl class="records">
-        ${row(load.level ? 'Höchste Stufe' : 'Schwerster Satz', r.heaviest && `${load.fmt(r.heaviest.value)} × ${fmtNum(r.heaviest.reps)}`, r.heaviest?.date)}
-        ${load.level ? '' : row('Bestes 1RM (geschätzt)', r.bestE1rm && fmtKg(r.bestE1rm.value), r.bestE1rm?.date)}
-        ${load.level ? '' : row('Höchstes Volumen', r.volume && fmtVol(r.volume.value), r.volume?.date)}
-        ${row('Meiste Wdh. in einem Satz', r.mostReps && `${fmtNum(r.mostReps.value)} × ${load.fmt(r.mostReps.weight)}`, r.mostReps?.date)}
+        ${reps ? '' : row(load.level ? 'Höchste Stufe' : 'Schwerster Satz', r.heaviest && `${load.fmt(r.heaviest.value)} × ${fmtNum(r.heaviest.reps)}`, r.heaviest?.date)}
+        ${load.mode !== 'kg' ? '' : row(load.type === 'dumbbell' ? 'Bestes 1RM pro Hand (geschätzt)' : 'Bestes 1RM (geschätzt)', r.bestE1rm && fmtKg(r.bestE1rm.value), r.bestE1rm?.date)}
+        ${load.mode !== 'kg' ? '' : row('Höchstes Volumen', r.volume && fmtVol(r.volume.value * L.volumeFactor({ load: { type: load.type } })), r.volume?.date)}
+        ${row('Meiste Wdh. in einem Satz', r.mostReps && (reps ? `${fmtNum(r.mostReps.value)} Wdh.` : `${fmtNum(r.mostReps.value)} × ${load.fmt(r.mostReps.weight)}`), r.mostReps?.date)}
+        ${reps ? row('Meiste Wdh. in einem Training', mostInSession && `${fmtNum(mostInSession.value)} Wdh.`, mostInSession?.date) : ''}
       </dl>
-      ${p.sinceStart !== null ? `<p class="stats">${load.level ? 'Stufen' : '1RM'}-Fortschritt: <strong>${fmtPct(p.sinceStart)}</strong> seit Beginn${p.last4Weeks !== null ? ` · <strong>${fmtPct(p.last4Weeks)}</strong> in 4 Wochen` : ''}</p>` : ''}
+      ${p.sinceStart !== null ? `<p class="stats">${load.level ? 'Stufen' : reps ? 'Wdh.' : '1RM'}-Fortschritt: <strong>${fmtPct(p.sinceStart)}</strong> seit Beginn${p.last4Weeks !== null ? ` · <strong>${fmtPct(p.last4Weeks)}</strong> in 4 Wochen` : ''}</p>` : ''}
     </section>`;
 }
 
@@ -309,7 +349,7 @@ async function machineDetail(id) {
   setHeader(m.name, '#/');
   const load = loadOf(m);
   const last = sessions[0];
-  const best = sessions.length ? Math.max(...sessions.map(maxWeight)) : null;
+  const best = sessions.length ? Math.max(...sessions.map(load.hasWeight ? maxWeight : st.sessionMaxReps)) : null;
 
   view.innerHTML = `
     <section class="card settings-card">
@@ -328,9 +368,9 @@ async function machineDetail(id) {
       last
         ? `<section class="card">
             <h2>Letztes Training <small>${fmtDate(last.date)}</small></h2>
-            <ol class="sets">${last.sets.map((s) => `<li><span>${fmtNum(s.reps)} Wdh.</span><strong>${load.fmt(s.weight)}</strong></li>`).join('')}</ol>
+            <ol class="sets">${last.sets.map((s) => `<li><span>${fmtNum(s.reps)} Wdh.</span><strong>${load.hasWeight ? load.fmt(s.weight) : ''}</strong></li>`).join('')}</ol>
             ${last.note ? `<p class="notes">${esc(last.note)}</p>` : ''}
-            <p class="stats">${load.level ? 'Höchste Stufe' : 'Bestes Gewicht'}: <strong>${load.fmt(best)}</strong> · Trainings: <strong>${sessions.length}</strong></p>
+            <p class="stats">${load.level ? 'Höchste Stufe' : load.hasWeight ? 'Bestes Gewicht' : 'Meiste Wdh.'}: <strong>${load.fmt(best)}</strong> · Trainings: <strong>${sessions.length}</strong></p>
           </section>`
         : ''
     }
@@ -345,6 +385,9 @@ async function machineDetail(id) {
               ${
                 load.level
                   ? `<button type="button" role="tab" data-chart="weight" aria-selected="true">Höchste Stufe</button>
+                     <button type="button" role="tab" data-chart="reps" aria-selected="false">Wdh. gesamt</button>`
+                  : !load.hasWeight
+                  ? `<button type="button" role="tab" data-chart="maxreps" aria-selected="true">Max. Wdh.</button>
                      <button type="button" role="tab" data-chart="reps" aria-selected="false">Wdh. gesamt</button>`
                   : `<button type="button" role="tab" data-chart="weight" aria-selected="true">Höchstgewicht</button>
                      <button type="button" role="tab" data-chart="e1rm" aria-selected="false">1RM</button>
@@ -365,7 +408,7 @@ async function machineDetail(id) {
                 .map(
                   (s) => `<li><a href="#/m/${m.id}/log/${s.id}">
                     <div class="li-main"><strong>${fmtDate(s.date)}</strong><small>${esc(setsSummary(s.sets, load))}</small></div>
-                    <div class="li-side"><small>${load.level ? `${fmtNum(st.sessionTotalReps(s))} Wdh.` : `Vol. ${fmtNum(volume(s))}`}</small></div>
+                    <div class="li-side"><small>${load.mode === 'kg' ? `Vol. ${fmtNum(volumeOfMachine(m)(s))}` : `${fmtNum(st.sessionTotalReps(s))} Wdh.`}</small></div>
                   </a></li>`
                 )
                 .join('')}
@@ -374,7 +417,7 @@ async function machineDetail(id) {
         : ''
     }
 
-    <a class="btn ghost" href="#/m/${m.id}/edit">Gerät bearbeiten</a>
+    <a class="btn ghost" href="#/m/${m.id}/edit">${L.FREE_TYPES.includes(load.type) ? 'Übung bearbeiten' : 'Gerät bearbeiten'}</a>
   `;
 
   const chartEl = document.getElementById('chart');
@@ -383,8 +426,9 @@ async function machineDetail(id) {
     const series = {
       weight: [load.level ? 'Verlauf höchste Stufe' : 'Verlauf Höchstgewicht', st.sessionMaxWeight, load.fmt],
       reps: ['Verlauf Wiederholungen gesamt', st.sessionTotalReps, (v) => `${fmtNum(v)} Wdh.`],
+      maxreps: ['Verlauf meiste Wiederholungen', st.sessionMaxReps, (v) => `${fmtNum(v)} Wdh.`],
       e1rm: ['Verlauf geschätztes 1RM', st.sessionBestE1rm, fmtKg],
-      volume: ['Verlauf Volumen', st.sessionVolume, fmtVol],
+      volume: ['Verlauf Volumen', volumeOfMachine(m), fmtVol],
     };
     const show = (key) => {
       const [label, fn, fmt] = series[key];
@@ -392,14 +436,14 @@ async function machineDetail(id) {
       view.querySelectorAll('[data-chart]').forEach((b) => b.setAttribute('aria-selected', b.dataset.chart === key));
     };
     view.querySelectorAll('[data-chart]').forEach((b) => (b.onclick = () => show(b.dataset.chart)));
-    show('weight');
+    show(load.hasWeight ? 'weight' : 'maxreps');
   }
 }
 
 // ---------- Gerät anlegen / bearbeiten ----------
 
 const DEFAULT_SETTINGS = ['Sitzhöhe', 'Rückenlehne'];
-const DEFAULT_CATEGORIES = ['Oberkörper', 'Beine', 'Rumpf', 'Zirkel'];
+const DEFAULT_CATEGORIES = ['Oberkörper', 'Beine', 'Rumpf', 'Zirkel', 'Freie Gewichte'];
 
 function settingRow(label = '', value = '') {
   return `
@@ -410,7 +454,7 @@ function settingRow(label = '', value = '') {
     </div>`;
 }
 
-async function editMachine(id, qr = '') {
+async function editMachine(id, qr = '', { free = false } = {}) {
   const existing = id ? await db.getMachine(id) : null;
   if (id && !existing) return go('#/');
   if (!id && qr) {
@@ -422,12 +466,14 @@ async function editMachine(id, qr = '') {
     id: db.uid(),
     qrCode: qr,
     name: '',
-    settings: DEFAULT_SETTINGS.map((label) => ({ label, value: '' })),
+    settings: free ? [] : DEFAULT_SETTINGS.map((label) => ({ label, value: '' })),
     notes: '',
     createdAt: new Date().toISOString(),
+    ...(free ? { categories: ['Freie Gewichte'], load: { type: 'dumbbell' } } : {}),
   };
+  const isFree = L.FREE_TYPES.includes(L.loadType(m));
 
-  setHeader(existing ? 'Gerät bearbeiten' : 'Neues Gerät', existing ? `#/m/${m.id}` : '#/');
+  setHeader(existing ? (isFree ? 'Übung bearbeiten' : 'Gerät bearbeiten') : isFree ? 'Neue Übung' : 'Neues Gerät', existing ? `#/m/${m.id}` : '#/');
   const used = watch.allCategories(await db.getMachines());
   const selected = new Set(m.categories || []);
   const catOptions = [...new Set([...DEFAULT_CATEGORIES, ...used, ...selected])];
@@ -436,12 +482,12 @@ async function editMachine(id, qr = '') {
   view.innerHTML = `
     <form id="form" class="form" autocomplete="off">
       ${!existing && qr ? `<p class="info">Neuer QR-Code erkannt. Lege das Gerät einmalig an – beim nächsten Scan erscheinen die Einstellungen direkt.</p>` : ''}
-      <label>Name des Geräts
-        <input name="name" required placeholder="z. B. Hip Adduction" value="${esc(m.name)}" autocapitalize="words">
+      <label>${isFree ? 'Name der Übung' : 'Name des Geräts'}
+        <input name="name" required placeholder="${isFree ? 'z. B. Bankdrücken' : 'z. B. Hip Adduction'}" value="${esc(m.name)}" autocapitalize="words">
       </label>
 
       <fieldset>
-        <legend>Einstellungen am Gerät</legend>
+        <legend>${isFree ? 'Einstellungen (optional, z. B. Bankneigung)' : 'Einstellungen am Gerät'}</legend>
         <div id="settings">${m.settings.map((s) => settingRow(s.label, s.value)).join('')}</div>
         <button type="button" class="btn ghost small" id="add-setting">+ Einstellung hinzufügen</button>
       </fieldset>
@@ -457,12 +503,23 @@ async function editMachine(id, qr = '') {
 
       <fieldset>
         <legend>Belastung</legend>
-        <div class="segmented" role="radiogroup">
-          <label><input type="radio" name="loadType" value="kg" ${loadOf(m).level ? '' : 'checked'}><span>Gewicht (kg)</span></label>
-          <label><input type="radio" name="loadType" value="level" ${loadOf(m).level ? 'checked' : ''}><span>Stufe</span></label>
+        <div class="segmented five" role="radiogroup">
+          ${[
+            ['kg', 'Gewicht (kg)'],
+            ['level', 'Stufe'],
+            ['dumbbell', 'Kurzhanteln'],
+            ['barbell', 'Langhantel'],
+            ['bodyweight', 'Körpergewicht'],
+          ]
+            .map(([v, label]) => `<label><input type="radio" name="loadType" value="${v}" ${L.loadType(m) === v ? 'checked' : ''}><span>${label}</span></label>`)
+            .join('')}
         </div>
+        <p class="hint load-hint" id="load-hint"></p>
         <label id="level-max" ${loadOf(m).level ? '' : 'hidden'}>Höchste Stufe
           <input name="levelMax" inputmode="numeric" pattern="[0-9]*" value="${loadOf(m).level ? loadOf(m).max : 12}">
+        </label>
+        <label id="bar-weight" ${L.loadType(m) === 'barbell' ? '' : 'hidden'}>Stangengewicht (kg)
+          <input name="barWeight" inputmode="decimal" value="${String(L.barWeight(m)).replace('.', ',')}">
         </label>
         ${existing ? `<p class="hint">Beim Umstellen werden bisherige Trainings in der neuen Einheit angezeigt.</p>` : ''}
       </fieldset>
@@ -519,9 +576,27 @@ async function editMachine(id, qr = '') {
     }
   });
 
-  form.querySelectorAll('input[name=loadType]').forEach((r) =>
-    r.addEventListener('change', () => (document.getElementById('level-max').hidden = form.loadType.value !== 'level'))
-  );
+  const LOAD_HINTS = {
+    kg: 'Gewicht in kg, z. B. Maschine mit Gewichtsblock.',
+    level: 'Stufe statt kg, z. B. Zirkelgeräte.',
+    dumbbell: 'Gewicht pro Hand. Im Volumen zählt es doppelt.',
+    barbell: 'Du gibst die Scheiben pro Seite ein, die Stange wird dazugerechnet.',
+    bodyweight: 'Nur Wiederholungen, kein Gewicht.',
+  };
+  const onLoadType = () => {
+    const t = form.loadType.value;
+    document.getElementById('level-max').hidden = t !== 'level';
+    document.getElementById('bar-weight').hidden = t !== 'barbell';
+    document.getElementById('load-hint').textContent = LOAD_HINTS[t];
+    // Freie Gewichte haben keine Geräte-Einstellungen: leere Vorgabe-Zeilen entfernen.
+    if (L.FREE_TYPES.includes(t)) {
+      settingsEl.querySelectorAll('.setting-row').forEach((row) => {
+        if (!row.querySelector('.s-value').value.trim()) row.remove();
+      });
+    }
+  };
+  form.querySelectorAll('input[name=loadType]').forEach((r) => r.addEventListener('change', onLoadType));
+  document.getElementById('load-hint').textContent = LOAD_HINTS[L.loadType(m)];
 
   document.getElementById('add-setting').onclick = () => {
     settingsEl.insertAdjacentHTML('beforeend', settingRow());
@@ -566,10 +641,13 @@ async function editMachine(id, qr = '') {
     const settings = [...settingsEl.querySelectorAll('.setting-row')]
       .map((row) => ({ label: row.querySelector('.s-label').value.trim(), value: row.querySelector('.s-value').value.trim() }))
       .filter((s) => s.label || s.value);
+    const t = fd.get('loadType');
     const load =
-      fd.get('loadType') === 'level'
+      t === 'level'
         ? { type: 'level', max: Math.min(99, Math.max(1, Math.round(parseNum(fd.get('levelMax')) || 12))) }
-        : { type: 'kg' };
+        : t === 'barbell'
+          ? { type: 'barbell', bar: Math.max(0, parseNum(fd.get('barWeight')) ?? L.DEFAULT_BAR) }
+          : { type: L.LOAD_TYPES.includes(t) ? t : 'kg' };
     const categories = [...catsEl.querySelectorAll('.chip[aria-pressed=true]')].map((c) => c.dataset.cat);
     await db.saveMachine({ ...m, name: fd.get('name').trim(), notes: fd.get('notes').trim(), settings, qrCode, load, categories });
     toast('Gespeichert');
@@ -600,15 +678,23 @@ function setRow(i, reps = '', weight = '', load = KG) {
         <button type="button" data-step="1" data-field="reps">+</button>
         <small>Wdh.</small>
       </div>
-      <div class="stepper">
-        <button type="button" data-step="-${load.step}" data-field="weight">−</button>
-        <input class="weight" inputmode="${load.level ? 'numeric' : 'decimal'}" value="${esc(weight)}" aria-label="${load.level ? 'Stufe' : 'Gewicht in kg'}">
-        <button type="button" data-step="${load.step}" data-field="weight">+</button>
-        <small>${load.unit}</small>
-      </div>
+      ${
+        load.hasWeight
+          ? `<div class="stepper">
+              <button type="button" data-step="-${load.step}" data-field="weight">−</button>
+              <input class="weight" inputmode="${load.level ? 'numeric' : 'decimal'}" value="${esc(weight)}" aria-label="${load.level ? 'Stufe' : `Gewicht (${load.unit})`}">
+              <button type="button" data-step="${load.step}" data-field="weight">+</button>
+              <small>${load.unit}</small>
+            </div>`
+          : `<input class="weight" type="hidden" value=""><span></span>`
+      }
       <button type="button" class="icon-btn remove" aria-label="Satz entfernen">✕</button>
+      ${load.type === 'barbell' ? `<small class="set-total"></small>` : ''}
     </div>`;
 }
+
+// Gespeicherten Wert als Eingabe darstellen (Langhantel: Gesamt → pro Seite).
+const toField = (load, w) => (w == null || w === '' ? '' : String(Math.round(load.toInput(w) * 100) / 100).replace('.', ','));
 
 async function logSession(machineId, sessionId) {
   const m = await db.getMachine(machineId);
@@ -633,7 +719,7 @@ async function logSession(machineId, sessionId) {
         <input type="date" name="date" value="${existing ? existing.date : todayIso()}" required>
       </label>
       ${prev ? `<p class="info">Letztes Training (${fmtDate(prev.date)}): ${esc(setsSummary(prev.sets, load))}</p>` : ''}
-      <div id="sets">${initialSets.map((s, i) => setRow(i + 1, s.reps ?? '', s.weight == null ? '' : String(s.weight).replace('.', ','), load)).join('')}</div>
+      <div id="sets">${initialSets.map((s, i) => setRow(i + 1, s.reps ?? '', toField(load, s.weight), load)).join('')}</div>
       <button type="button" class="btn ghost small" id="add-set">+ Satz</button>
       <label>Notiz
         <input name="note" placeholder="optional" value="${esc(existing?.note)}">
@@ -645,14 +731,26 @@ async function logSession(machineId, sessionId) {
 
   const setsEl = document.getElementById('sets');
   const renumber = () => setsEl.querySelectorAll('.set-no').forEach((el, i) => (el.textContent = i + 1));
+  // Langhantel: Gesamtgewicht unter jeder Zeile anzeigen.
+  const updateTotals = () => {
+    if (load.type !== 'barbell') return;
+    setsEl.querySelectorAll('.set-row').forEach((row) => {
+      const v = parseNum(row.querySelector('.weight').value);
+      row.querySelector('.set-total').textContent =
+        v === null ? `Stange ${fmtKg(load.bar)} + Scheiben pro Seite` : `= ${fmtKg(load.fromInput(v))} (${fmtNum(load.bar)} + 2 × ${fmtNum(v)})`;
+    });
+  };
+  setsEl.addEventListener('input', updateTotals);
+  updateTotals();
 
   document.getElementById('add-set').onclick = () => {
     const rows = setsEl.querySelectorAll('.set-row');
     const lastRow = rows[rows.length - 1];
     const fromPrev = prev?.sets[rows.length];
     const reps = fromPrev ? fromPrev.reps ?? '' : lastRow?.querySelector('.reps').value ?? '';
-    const weight = fromPrev ? (fromPrev.weight == null ? '' : String(fromPrev.weight).replace('.', ',')) : lastRow?.querySelector('.weight').value ?? '';
+    const weight = fromPrev ? toField(load, fromPrev.weight) : lastRow?.querySelector('.weight').value ?? '';
     setsEl.insertAdjacentHTML('beforeend', setRow(rows.length + 1, reps, weight, load));
+    updateTotals();
   };
 
   setsEl.addEventListener('click', (e) => {
@@ -671,13 +769,17 @@ async function logSession(machineId, sessionId) {
     next = Math.max(isWeight ? load.min : 0, next);
     if (isWeight) next = Math.min(load.max, next);
     input.value = fmtNum(next).replace(/\./g, '');
+    updateTotals();
   });
 
   document.getElementById('form').onsubmit = async (e) => {
     e.preventDefault();
     const sets = [...setsEl.querySelectorAll('.set-row')]
-      .map((row) => ({ reps: parseNum(row.querySelector('.reps').value), weight: parseNum(row.querySelector('.weight').value) }))
-      .filter((s) => s.reps !== null || s.weight !== null)
+      .map((row) => {
+        const v = parseNum(row.querySelector('.weight').value);
+        return { reps: parseNum(row.querySelector('.reps').value), weight: !load.hasWeight ? 0 : v === null ? null : load.fromInput(v) };
+      })
+      .filter((s) => s.reps !== null || (load.hasWeight && s.weight !== null))
       .map((s) => (load.level && s.weight !== null ? { ...s, weight: Math.min(load.max, Math.max(load.min, Math.round(s.weight))) } : s));
     if (!sets.length) return toast('Mindestens einen Satz eintragen.');
     const fd = new FormData(e.target);
@@ -689,10 +791,15 @@ async function logSession(machineId, sessionId) {
       note: fd.get('note').trim(),
       createdAt: existing?.createdAt || new Date().toISOString(),
     };
-    const records = st.newRecords(session, sessions, { level: load.level });
+    const records = st.newRecords(session, sessions, { mode: load.mode });
     await db.saveSession(session);
     if (records.length) {
-      const text = { heaviest: (v) => (load.level ? load.fmt(v) : `schwerster Satz ${fmtKg(v)}`), e1rm: (v) => `1RM ${fmtKg(v)}`, volume: (v) => `Volumen ${fmtVol(v)}` };
+      const text = {
+        heaviest: (v) => (load.level ? load.fmt(v) : `schwerster Satz ${load.fmt(v)}`),
+        e1rm: (v) => `1RM ${fmtKg(v)}${load.type === 'dumbbell' ? ' pro Hand' : ''}`,
+        volume: (v) => `Volumen ${fmtVol(v * L.volumeFactor(m))}`,
+        reps: (v) => `${fmtNum(v)} Wdh.`,
+      };
       toast(`🏆 Neuer Rekord: ${records.map((r) => text[r.type](r.value)).join(' · ')}`, 4500);
     } else {
       toast('Training gespeichert 💪');
@@ -799,8 +906,8 @@ async function statsView() {
     return;
   }
   // Volumen in kg nur für kg-Geräte; Stufen-Trainings zählen als Trainingstage.
-  const levelIds = new Set(machines.filter(isLevelMachine).map((m) => m.id));
-  const volumeOf = (s) => (levelIds.has(s.machineId) ? 0 : st.sessionVolume(s));
+  const factor = new Map(machines.map((m) => [m.id, L.volumeFactor(m)]));
+  const volumeOf = (s) => st.sessionVolume(s) * (factor.get(s.machineId) ?? 1);
   const o = st.overview(sessions, new Date(), volumeOf);
   const weeks = st.weeklyStats(sessions, 12, new Date(), volumeOf);
   const byMachine = machines
@@ -808,7 +915,7 @@ async function statsView() {
       const list = sessions.filter((s) => s.machineId === m.id);
       if (!list.length) return null;
       const last = list.reduce((a, b) => (b.date > a.date ? b : a));
-      return { m, count: list.length, last, p: st.progress(list, isLevelMachine(m) ? st.sessionMaxWeight : st.sessionBestE1rm) };
+      return { m, count: list.length, last, p: st.progress(list, progressMetric(loadOf(m))) };
     })
     .filter(Boolean)
     .sort((a, b) => (b.p.sinceStart ?? -Infinity) - (a.p.sinceStart ?? -Infinity));
@@ -835,7 +942,7 @@ async function statsView() {
     <section class="card">
       <h2>Volumen pro Woche</h2>
       ${barChart(weeks, (w) => w.volume, fmtVol, 'Volumen pro Woche, letzte 12 Wochen')}
-      <p class="hint">Volumen = Wiederholungen × Gewicht, über alle Sätze (ohne Stufen-Geräte).</p>
+      <p class="hint">Volumen = Wiederholungen × Gewicht, über alle Sätze (Kurzhanteln ×2; ohne Stufen- und Körpergewichtsübungen).</p>
     </section>
 
     <section class="card">
@@ -845,7 +952,7 @@ async function statsView() {
           .map(
             ({ m, count, last, p }) => `<li><a href="#/m/${m.id}">
               <div class="li-main"><strong>${esc(m.name)}</strong><small>${count}× · zuletzt ${st.parseDate(last.date).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' })}</small></div>
-              <div class="li-side"><span class="${p.sinceStart > 0 ? 'up' : p.sinceStart < 0 ? 'down' : ''}">${fmtPct(p.sinceStart)}</span><small>${isLevelMachine(m) ? 'Stufe' : '1RM'} seit Beginn</small></div>
+              <div class="li-side"><span class="${p.sinceStart > 0 ? 'up' : p.sinceStart < 0 ? 'down' : ''}">${fmtPct(p.sinceStart)}</span><small>${{ level: 'Stufe', reps: 'Wdh.' }[loadOf(m).mode] ?? '1RM'} seit Beginn</small></div>
             </a></li>`
           )
           .join('')}
@@ -916,7 +1023,7 @@ async function inbox(initial = '') {
         for (const r of fresh.sort((a, b) => a.date.localeCompare(b.date))) {
           const session = { id: db.uid(), machineId: r.machineId, date: r.date, sets: r.sets, note: '⌚ Apple Watch', createdAt: new Date().toISOString() };
           const prev = await db.getSessions(r.machineId);
-          if (st.newRecords(session, prev, { level: isLevelMachine(machines.get(r.machineId)) }).length) recordMsgs.push(machines.get(r.machineId).name);
+          if (st.newRecords(session, prev, { mode: loadOf(machines.get(r.machineId)).mode }).length) recordMsgs.push(machines.get(r.machineId).name);
           await db.saveSession(session);
         }
         toast(
