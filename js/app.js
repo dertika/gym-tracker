@@ -194,11 +194,11 @@ async function home() {
             <ul class="list">
               ${splits
                 .map((sp) => {
-                  const list = watch.splitMachines(sp, machines);
-                  const doneN = list.filter((m) => doneToday.has(m.id)).length;
+                  const list = watch.splitSlots(sp, machines);
+                  const doneN = list.filter((slot) => slot.some((m) => doneToday.has(m.id))).length;
                   const lastDate = sessions.filter((s) => sp.machineIds.includes(s.machineId)).reduce((a, s) => (s.date > a ? s.date : a), '');
                   return `<li><a href="#/split/${sp.id}">
-                    <div class="li-main"><strong>${esc(sp.name)}</strong><small>${list.length} ${list.length === 1 ? 'Gerät' : 'Geräte'}${lastDate ? ` · zuletzt ${fmtDate(lastDate)}` : ''}</small></div>
+                    <div class="li-main"><strong>${esc(sp.name)}</strong><small>${list.length} ${list.length === 1 ? 'Übung' : 'Übungen'}${lastDate ? ` · zuletzt ${fmtDate(lastDate)}` : ''}</small></div>
                     <div class="li-side">${doneN ? `<span class="${doneN === list.length ? 'up' : ''}">${doneN}/${list.length} ✓</span><small>heute</small>` : ''}</div>
                   </a></li>`;
                 })
@@ -861,7 +861,7 @@ async function splitView(id) {
   if (!split) return go('#/');
   returnSplit = id;
   setHeader(split.name, '#/');
-  const machines = watch.splitMachines(split, await db.getMachines());
+  const slots = watch.splitSlots(split, await db.getMachines());
   const sessions = await db.getAllSessions();
   const today = todayIso();
   const last = {};
@@ -869,26 +869,35 @@ async function splitView(id) {
     if (!last[s.machineId] || s.date > last[s.machineId].date) last[s.machineId] = s;
   });
   const done = new Set(sessions.filter((s) => s.date === today).map((s) => s.machineId));
-  const doneN = machines.filter((m) => done.has(m.id)).length;
+  const doneN = slots.filter((slot) => slot.some((m) => done.has(m.id))).length;
+
+  // Kachel für ein Gerät (bei Alternativen nebeneinander).
+  const tile = (m, slotDone) => {
+    const load = loadOf(m);
+    const settings = m.settings.filter((x) => String(x.value ?? '').trim());
+    const cls = done.has(m.id) ? 'did' : slotDone ? 'skipped' : '';
+    return `<a class="slot-tile ${cls}" href="#/m/${m.id}">
+      <strong>${done.has(m.id) ? '✓ ' : ''}${esc(m.name)}</strong>
+      ${settings.length ? `<small>${esc(settings.map((x) => `${x.label}: ${x.value}`).join(' · '))}</small>` : ''}
+      <small>${last[m.id] ? `Zuletzt ${fmtDate(last[m.id].date)}: ${esc(setsSummary(last[m.id].sets, load))}` : 'Noch kein Training'}</small>
+    </a>`;
+  };
 
   view.innerHTML = `
     ${
-      machines.length
-        ? `<p class="info">Heute erledigt: <strong>${doneN} von ${machines.length}</strong>${doneN === machines.length ? ' – stark! 💪' : ''}</p>
+      slots.length
+        ? `<p class="info">Heute erledigt: <strong>${doneN} von ${slots.length}</strong>${doneN === slots.length ? ' – stark! 💪' : ''}</p>
            ${split.note ? `<p class="hint split-note">${esc(split.note)}</p>` : ''}
-           <ol class="list split-list">
-             ${machines
-               .map((m, i) => {
-                 const load = loadOf(m);
-                 const settings = m.settings.filter((x) => String(x.value ?? '').trim());
-                 return `<li class="${done.has(m.id) ? 'done' : ''}"><a href="#/m/${m.id}">
-                   <span class="split-no">${done.has(m.id) ? '✓' : i + 1}</span>
-                   <div class="li-main">
-                     <strong>${esc(m.name)}</strong>
-                     ${settings.length ? `<small>${esc(settings.map((x) => `${x.label}: ${x.value}`).join(' · '))}</small>` : ''}
-                     <small>${last[m.id] ? `Zuletzt ${fmtDate(last[m.id].date)}: ${esc(setsSummary(last[m.id].sets, load))}` : 'Noch kein Training'}</small>
+           <ol class="slot-list">
+             ${slots
+               .map((slot, i) => {
+                 const slotDone = slot.some((m) => done.has(m.id));
+                 return `<li class="${slotDone ? 'done' : ''}">
+                   <span class="split-no">${slotDone ? '✓' : i + 1}</span>
+                   <div class="slot-tiles ${slot.length > 1 ? 'multi' : ''}">
+                     ${slot.map((m) => tile(m, slotDone)).join('<span class="or">oder</span>')}
                    </div>
-                 </a></li>`;
+                 </li>`;
                })
                .join('')}
            </ol>`
@@ -901,10 +910,12 @@ async function splitView(id) {
 async function editSplit(id) {
   const existing = id ? await db.getSplit(id) : null;
   if (id && !existing) return go('#/');
-  const split = existing || { id: db.uid(), name: '', machineIds: [], createdAt: new Date().toISOString() };
+  const split = existing || { id: db.uid(), name: '', slots: [], machineIds: [], createdAt: new Date().toISOString() };
   const all = await db.getMachines();
   const byId = new Map(all.map((m) => [m.id, m]));
-  let ids = split.machineIds.filter((x) => byId.has(x));
+  // Plätze als ID-Listen; ein Platz mit mehreren Geräten ist ein Entweder-oder.
+  let slots = watch.slotIds(split).map((slot) => slot.filter((x) => byId.has(x))).filter((slot) => slot.length);
+  let target = null; // Platz-Index, zu dem das nächste Gerät als Alternative kommt
   const categories = watch.allCategories(all);
   let cat = '';
   setHeader(existing ? 'Split bearbeiten' : 'Neuer Split', existing ? `#/split/${id}` : '#/');
@@ -919,11 +930,13 @@ async function editSplit(id) {
         <input name="note" placeholder="z. B. 3 × 8–12 Wdh." value="${esc(split.note)}">
       </label>
       <fieldset>
-        <legend>Geräte in Reihenfolge</legend>
+        <legend>Übungen in Reihenfolge</legend>
         <ol class="split-edit" id="chosen"></ol>
+        <p class="hint slot-hint">Geräte auf einem Platz sind ein <strong>Entweder-oder</strong>. „⧉“ verbindet einen Platz mit dem nächsten, „+ oder“ fügt eine Alternative hinzu.</p>
       </fieldset>
       <fieldset>
-        <legend>Geräte hinzufügen</legend>
+        <legend id="add-legend">Geräte hinzufügen</legend>
+        <p class="info target-info" id="target-info" hidden></p>
         ${
           categories.length
             ? `<div class="chips" id="add-filter">${['', ...categories].map((c) => `<button type="button" class="chip" data-cat="${esc(c)}" aria-pressed="${c === ''}">${c ? esc(c) : 'Alle'}</button>`).join('')}</div>`
@@ -938,23 +951,34 @@ async function editSplit(id) {
 
   const chosenEl = document.getElementById('chosen');
   const availEl = document.getElementById('available');
+  const targetInfo = document.getElementById('target-info');
   const draw = () => {
-    chosenEl.innerHTML = ids.length
-      ? ids
+    if (target !== null && !slots[target]) target = null;
+    chosenEl.innerHTML = slots.length
+      ? slots
           .map(
-            (mid, i) => `<li data-id="${mid}">
+            (slot, i) => `<li data-i="${i}" class="${target === i ? 'targeted' : ''}">
               <span class="split-no">${i + 1}</span>
-              <span class="name">${esc(byId.get(mid).name)}</span>
-              <button type="button" class="icon-btn" data-act="up" aria-label="Nach oben" ${i === 0 ? 'disabled' : ''}>↑</button>
-              <button type="button" class="icon-btn" data-act="down" aria-label="Nach unten" ${i === ids.length - 1 ? 'disabled' : ''}>↓</button>
-              <button type="button" class="icon-btn" data-act="remove" aria-label="Entfernen">✕</button>
+              <div class="slot-chips">
+                ${slot.map((mid) => `<span class="slot-chip">${esc(byId.get(mid).name)}<button type="button" data-act="drop" data-id="${mid}" aria-label="${esc(byId.get(mid).name)} entfernen">✕</button></span>`).join('<span class="or">oder</span>')}
+              </div>
+              <div class="slot-actions">
+                <button type="button" class="icon-btn" data-act="up" aria-label="Nach oben" ${i === 0 ? 'disabled' : ''}>↑</button>
+                <button type="button" class="icon-btn" data-act="down" aria-label="Nach unten" ${i === slots.length - 1 ? 'disabled' : ''}>↓</button>
+                <button type="button" class="icon-btn" data-act="merge" aria-label="Mit nächstem Platz verbinden (entweder oder)" title="Mit nächstem verbinden" ${i === slots.length - 1 ? 'disabled' : ''}>⧉</button>
+                <button type="button" class="mini" data-act="or">${target === i ? 'Abbrechen' : '+ oder'}</button>
+                ${slot.length > 1 ? `<button type="button" class="mini" data-act="split">Lösen</button>` : ''}
+              </div>
             </li>`
           )
           .join('')
       : '<li class="empty">Noch keine Geräte – unten antippen zum Hinzufügen.</li>';
-    const rest = all.filter((m) => !ids.includes(m.id) && (!cat || (m.categories || []).includes(cat)));
+    targetInfo.hidden = target === null;
+    if (target !== null) targetInfo.innerHTML = `Nächstes Gerät wird <strong>Alternative zu Platz ${target + 1}</strong>. <button type="button" class="mini" data-act="cancel">Abbrechen</button>`;
+    const used = new Set(slots.flat());
+    const rest = all.filter((m) => !used.has(m.id) && (!cat || (m.categories || []).includes(cat)));
     availEl.innerHTML =
-      rest.map((m) => `<li><button type="button" class="pick" data-id="${m.id}"><span>+ ${esc(m.name)}</span>${m.categories?.length ? `<small>${esc(m.categories.join(' · '))}</small>` : ''}</button></li>`).join('') ||
+      rest.map((m) => `<li><button type="button" class="pick" data-id="${m.id}"><span>${target !== null ? 'oder' : '+'} ${esc(m.name)}</span>${m.categories?.length ? `<small>${esc(m.categories.join(' · '))}</small>` : ''}</button></li>`).join('') ||
       '<li class="empty">Keine weiteren Geräte.</li>';
   };
   draw();
@@ -962,16 +986,35 @@ async function editSplit(id) {
   chosenEl.addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-act]');
     if (!btn) return;
-    const i = ids.indexOf(btn.closest('li').dataset.id);
-    if (btn.dataset.act === 'remove') ids.splice(i, 1);
-    if (btn.dataset.act === 'up' && i > 0) [ids[i - 1], ids[i]] = [ids[i], ids[i - 1]];
-    if (btn.dataset.act === 'down' && i < ids.length - 1) [ids[i + 1], ids[i]] = [ids[i], ids[i + 1]];
+    const i = Number(btn.closest('li').dataset.i);
+    const act = btn.dataset.act;
+    if (act === 'drop') {
+      slots[i] = slots[i].filter((x) => x !== btn.dataset.id);
+      if (!slots[i].length) slots.splice(i, 1);
+    }
+    if (act === 'up' && i > 0) [slots[i - 1], slots[i]] = [slots[i], slots[i - 1]];
+    if (act === 'down' && i < slots.length - 1) [slots[i + 1], slots[i]] = [slots[i], slots[i + 1]];
+    if (act === 'merge' && i < slots.length - 1) slots.splice(i, 2, [...slots[i], ...slots[i + 1]]);
+    if (act === 'split') slots.splice(i, 1, ...slots[i].map((x) => [x]));
+    if (act === 'or') {
+      target = target === i ? null : i;
+      if (target !== null) availEl.closest('fieldset').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else if (act !== 'drop' || !slots[target]) target = null;
     draw();
+  });
+  targetInfo.addEventListener('click', (e) => {
+    if (e.target.closest('[data-act=cancel]')) {
+      target = null;
+      draw();
+    }
   });
   availEl.addEventListener('click', (e) => {
     const btn = e.target.closest('.pick');
     if (!btn) return;
-    ids.push(btn.dataset.id);
+    if (target !== null) {
+      slots[target].push(btn.dataset.id);
+      target = null;
+    } else slots.push([btn.dataset.id]);
     draw();
   });
   const filter = document.getElementById('add-filter');
@@ -987,7 +1030,7 @@ async function editSplit(id) {
   document.getElementById('form').onsubmit = async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
-    await db.saveSplit({ ...split, name: fd.get('name').trim(), note: fd.get('note').trim(), machineIds: ids });
+    await db.saveSplit({ ...split, name: fd.get('name').trim(), note: fd.get('note').trim(), slots, machineIds: watch.slotsToIds(slots) });
     toast('Split gespeichert');
     location.replace(`#/split/${split.id}`);
   };
@@ -1046,6 +1089,7 @@ async function templateApply(tid) {
                         <option value="new:machine" ${match ? '' : 'selected'}>Neu: ${esc(ex.machine)}</option>
                         ${ex.alt ? `<option value="new:alt">Neu: ${esc(ex.alt[0])} (${{ dumbbell: 'Kurzhanteln', barbell: 'Langhantel', bodyweight: 'Körpergewicht' }[ex.alt[1]]})</option>` : ''}
                       </optgroup>
+                      ${ex.alt ? `<option value="both">Beides (entweder oder): ${esc(match ? match.name : ex.machine)} / ${esc(ex.alt[0])}</option>` : ''}
                       <option value="skip">– weglassen –</option>
                     </select>
                   </li>`;
@@ -1067,17 +1111,13 @@ async function templateApply(tid) {
     const existingNames = new Set((await db.getSplits()).map((sp) => sp.name));
     let newCount = 0;
     for (const [si, sp] of tpl.splits.entries()) {
-      const ids = [];
-      for (const [ei, k] of sp.exercises.entries()) {
-        const ex = T.exercise(k);
-        const v = fd.get(`s${si}e${ei}`);
-        if (v === 'skip') continue;
-        if (v.startsWith('m:')) {
-          ids.push(v.slice(2));
-          continue;
-        }
-        const alt = v === 'new:alt' && ex.alt;
+      const slots = [];
+      // Neues Gerät (oder die Alternative) einmalig anlegen und die ID liefern.
+      const ensure = async (ex, alt) => {
         const name = alt ? ex.alt[0] : ex.machine;
+        // Gleichnamiges vorhandenes Gerät wiederverwenden statt doppelt anzulegen.
+        const same = machines.find((m) => m.name.trim().toLowerCase() === name.toLowerCase());
+        if (same) return same.id;
         if (!created.has(name)) {
           const free = alt && L.FREE_TYPES.includes(ex.alt[1]);
           const m = {
@@ -1094,12 +1134,23 @@ async function templateApply(tid) {
           created.set(name, m.id);
           newCount++;
         }
-        ids.push(created.get(name));
+        return created.get(name);
+      };
+      for (const [ei, k] of sp.exercises.entries()) {
+        const ex = T.exercise(k);
+        const v = fd.get(`s${si}e${ei}`);
+        if (v === 'skip') continue;
+        if (v.startsWith('m:')) slots.push([v.slice(2)]);
+        else if (v === 'both') {
+          const match = T.matchMachine(ex, machines);
+          slots.push([match ? match.id : await ensure(ex, false), await ensure(ex, true)]);
+        } else slots.push([await ensure(ex, v === 'new:alt' && ex.alt)]);
       }
       let name = sp.name;
       for (let i = 2; existingNames.has(name); i++) name = `${sp.name} (${i})`;
       existingNames.add(name);
-      await db.saveSplit({ id: db.uid(), name, note: sp.note, machineIds: [...new Set(ids)], createdAt: new Date().toISOString() });
+      const unique = slots.map((slot) => [...new Set(slot)]);
+      await db.saveSplit({ id: db.uid(), name, note: sp.note, slots: unique, machineIds: watch.slotsToIds(unique), createdAt: new Date().toISOString() });
     }
     toast(`${tpl.splits.length} Splits angelegt${newCount ? `, ${newCount} neue Geräte` : ''} ✓`, 3500);
     location.replace('#/');
@@ -1574,7 +1625,10 @@ async function settings() {
     const cat = btn.dataset.cat || null;
     const split = btn.dataset.split ? splits.find((sp) => sp.id === btn.dataset.split) : null;
     const config = split
-      ? watch.buildWatchConfig(watch.splitMachines(split, machines), lastByMachine, null, { numbered: true })
+      ? (() => {
+          const e = watch.splitWatchEntries(split, machines);
+          return watch.buildWatchConfig(e.machines, lastByMachine, null, { labels: e.labels });
+        })()
       : watch.buildWatchConfig(machines, lastByMachine, cat);
     const json = JSON.stringify(config);
     const n = Object.keys(config).length;

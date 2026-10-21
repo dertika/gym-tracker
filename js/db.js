@@ -101,8 +101,11 @@ export async function deleteMachine(id) {
   keys.forEach((k) => tx.objectStore('sessions').delete(k));
   const splits = await promisify(tx.objectStore('splits').getAll());
   splits
-    .filter((sp) => sp.machineIds.includes(id))
-    .forEach((sp) => tx.objectStore('splits').put({ ...sp, machineIds: sp.machineIds.filter((m) => m !== id) }));
+    .filter((sp) => (sp.machineIds || []).includes(id) || (sp.slots || []).some((slot) => slot.includes(id)))
+    .forEach((sp) => {
+      const slots = (sp.slots || (sp.machineIds || []).map((m) => [m])).map((slot) => slot.filter((m) => m !== id)).filter((slot) => slot.length);
+      tx.objectStore('splits').put({ ...sp, slots, machineIds: [...new Set(slots.flat())] });
+    });
   await done(tx);
   changed();
 }

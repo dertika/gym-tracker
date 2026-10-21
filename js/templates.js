@@ -7,7 +7,7 @@ const EX = {
   incline: { name: 'Schrägbankdrücken', machine: 'Schrägbank-Brustpresse', alt: ['Kurzhantel-Schrägbankdrücken', 'dumbbell'], match: ['schräg', 'incline'], cat: 'Oberkörper' },
   row: { name: 'Rudern', machine: 'Rudermaschine', alt: ['Kurzhantel-Rudern', 'dumbbell'], match: ['rudern', 'row'], cat: 'Oberkörper' },
   shoulder: { name: 'Schulterdrücken', machine: 'Schulterpresse', alt: ['Kurzhantel-Schulterdrücken', 'dumbbell'], match: ['schulterpresse', 'shoulder press', 'schulterdrücken'], cat: 'Oberkörper' },
-  lat: { name: 'Latziehen', machine: 'Latzug', alt: ['Klimmzüge', 'bodyweight'], match: ['latzug', 'lat pull', 'pulldown', 'latziehen', 'klimmz'], cat: 'Oberkörper' },
+  lat: { name: 'Latziehen', machine: 'Latzug', alt: ['Klimmzüge', 'bodyweight'], match: ['latzug', 'lat pull', 'pulldown', 'latziehen'], exclude: ['klimmz'], cat: 'Oberkörper' },
   fly: { name: 'Butterfly', machine: 'Butterfly', alt: ['Kurzhantel-Flys', 'dumbbell'], match: ['butterfly', 'pec fly', 'pec deck', 'flys'], exclude: ['reverse', 'rear', 'rück'], cat: 'Oberkörper' },
   lateral: { name: 'Seitheben', machine: 'Seitheben-Maschine', alt: ['Kurzhantel-Seitheben', 'dumbbell'], match: ['seitheben', 'lateral raise'], cat: 'Oberkörper' },
   reverseFly: { name: 'Hintere Schulter', machine: 'Reverse Fly', alt: ['Kurzhantel-Reverse-Flys', 'dumbbell'], match: ['reverse fly', 'rear delt', 'reverse'], cat: 'Oberkörper' },
