@@ -4,6 +4,7 @@ import * as st from './stats.js';
 import * as watch from './watch.js';
 import * as sync from './sync.js';
 import * as L from './load.js';
+import * as T from './templates.js';
 
 const view = document.getElementById('view');
 const titleEl = document.getElementById('title');
@@ -134,6 +135,8 @@ const routes = [
   [/^#\/inbox(?:\?data=(.*))?$/, (data) => inbox(data ? decodeURIComponent(data) : '')],
   [/^#\/watch-help$/, watchHelp],
   [/^#\/split\/new$/, () => editSplit(null)],
+  [/^#\/templates$/, templateList],
+  [/^#\/templates\/([^/]+)$/, templateApply],
   [/^#\/split\/([^/]+)$/, splitView],
   [/^#\/split\/([^/]+)\/edit$/, (id) => editSplit(id)],
 ];
@@ -201,7 +204,10 @@ async function home() {
                 })
                 .join('')}
             </ul>
-            <a class="btn ghost small" href="#/split/new">+ Split anlegen</a>
+            <div class="row">
+              <a class="btn ghost small" href="#/split/new">+ Split anlegen</a>
+              <a class="btn ghost small" href="#/templates">Vorlagen</a>
+            </div>
           </section>`
         : ''
     }
@@ -241,7 +247,8 @@ async function home() {
     ${machines.length ? `<a class="btn ghost" href="#/inbox">⌚ Watch-Einträge einfügen</a>` : ''}
     <a class="btn ghost" href="#/new">+ Gerät ohne QR-Code anlegen</a>
     <a class="btn ghost" href="#/new?free=1">+ Freie Übung anlegen (Hanteln, Körpergewicht)</a>
-    ${!splits.length && machines.length ? `<a class="btn ghost" href="#/split/new">+ Split anlegen (Trainingsplan)</a>` : ''}
+    ${!splits.length ? `<a class="btn ghost" href="#/templates">📋 Trainingsplan aus Vorlage (2er- / 3er-Split)</a>` : ''}
+    ${!splits.length && machines.length ? `<a class="btn ghost" href="#/split/new">+ Eigenen Split anlegen</a>` : ''}
   `;
 
   const search = document.getElementById('search');
@@ -868,6 +875,7 @@ async function splitView(id) {
     ${
       machines.length
         ? `<p class="info">Heute erledigt: <strong>${doneN} von ${machines.length}</strong>${doneN === machines.length ? ' – stark! 💪' : ''}</p>
+           ${split.note ? `<p class="hint split-note">${esc(split.note)}</p>` : ''}
            <ol class="list split-list">
              ${machines
                .map((m, i) => {
@@ -905,6 +913,10 @@ async function editSplit(id) {
     <form id="form" class="form" autocomplete="off">
       <label>Name des Splits
         <input name="name" required placeholder="z. B. Push, Pull, Beine" value="${esc(split.name)}" autocapitalize="sentences">
+      </label>
+      ${existing ? '' : `<a class="btn ghost small" href="#/templates">📋 Stattdessen eine Vorlage verwenden</a>`}
+      <label>Notiz (optional)
+        <input name="note" placeholder="z. B. 3 × 8–12 Wdh." value="${esc(split.note)}">
       </label>
       <fieldset>
         <legend>Geräte in Reihenfolge</legend>
@@ -974,8 +986,8 @@ async function editSplit(id) {
 
   document.getElementById('form').onsubmit = async (e) => {
     e.preventDefault();
-    const name = new FormData(e.target).get('name').trim();
-    await db.saveSplit({ ...split, name, machineIds: ids });
+    const fd = new FormData(e.target);
+    await db.saveSplit({ ...split, name: fd.get('name').trim(), note: fd.get('note').trim(), machineIds: ids });
     toast('Split gespeichert');
     location.replace(`#/split/${split.id}`);
   };
@@ -987,6 +999,111 @@ async function editSplit(id) {
       toast('Split gelöscht');
       location.replace('#/');
     };
+}
+
+// ---------- Split-Vorlagen ----------
+
+function templateList() {
+  setHeader('Vorlagen', '#/');
+  view.innerHTML = `
+    <p class="info">Wähle eine Vorlage. Im nächsten Schritt ordnest du jeder Übung eines deiner Geräte zu oder legst es neu an.</p>
+    ${T.TEMPLATES.map(
+      (t) => `<a class="card template-card" href="#/templates/${t.id}">
+        <h2>${esc(t.name)}</h2>
+        <p class="hint">${esc(t.desc)}</p>
+        ${t.splits.map((sp) => `<p><strong>${esc(sp.name)}:</strong> ${sp.exercises.map((k) => esc(T.exercise(k).name)).join(', ')}</p>`).join('')}
+      </a>`
+    ).join('')}
+    <p class="hint">Allgemeine Vorschläge – bei Beschwerden die Übungsauswahl mit einem Trainer im Studio abstimmen.</p>
+  `;
+}
+
+async function templateApply(tid) {
+  const tpl = T.TEMPLATES.find((t) => t.id === tid);
+  if (!tpl) return go('#/templates');
+  setHeader(tpl.name.split(':')[0], '#/templates');
+  const machines = await db.getMachines();
+  const machineOptions = (selected) =>
+    machines.map((m) => `<option value="m:${m.id}" ${selected === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('');
+
+  view.innerHTML = `
+    <p class="info">Ordne jeder Übung ein Gerät zu. Passende vorhandene Geräte sind schon ausgewählt. Neue Geräte kannst du später über „Gerät bearbeiten“ mit dem QR-Code verknüpfen.</p>
+    <form id="form" class="form">
+      ${tpl.splits
+        .map(
+          (sp, si) => `<section class="card">
+            <h2>Split „${esc(sp.name)}“</h2>
+            <ol class="tpl-list">
+              ${sp.exercises
+                .map((k, ei) => {
+                  const ex = T.exercise(k);
+                  const match = T.matchMachine(ex, machines);
+                  return `<li>
+                    <div class="tpl-ex"><strong>${ei + 1}. ${esc(ex.name)}</strong><small>Gerät: ${esc(ex.machine)}${ex.alt ? ` · Alternative: ${esc(ex.alt[0])}` : ''}</small></div>
+                    <select name="s${si}e${ei}" aria-label="Gerät für ${esc(ex.name)}">
+                      ${machines.length ? `<optgroup label="Vorhandene Geräte">${machineOptions(match?.id)}</optgroup>` : ''}
+                      <optgroup label="Neu anlegen">
+                        <option value="new:machine" ${match ? '' : 'selected'}>Neu: ${esc(ex.machine)}</option>
+                        ${ex.alt ? `<option value="new:alt">Neu: ${esc(ex.alt[0])} (${{ dumbbell: 'Kurzhanteln', barbell: 'Langhantel', bodyweight: 'Körpergewicht' }[ex.alt[1]]})</option>` : ''}
+                      </optgroup>
+                      <option value="skip">– weglassen –</option>
+                    </select>
+                  </li>`;
+                })
+                .join('')}
+            </ol>
+          </section>`
+        )
+        .join('')}
+      <button class="btn primary big" type="submit">${tpl.splits.length} Splits anlegen</button>
+    </form>
+  `;
+
+  document.getElementById('form').onsubmit = async (e) => {
+    e.preventDefault();
+    e.submitter && (e.submitter.disabled = true);
+    const fd = new FormData(e.target);
+    const created = new Map(); // gleiche neue Geräte nur einmal anlegen (z. B. Bauch in zwei Splits)
+    const existingNames = new Set((await db.getSplits()).map((sp) => sp.name));
+    let newCount = 0;
+    for (const [si, sp] of tpl.splits.entries()) {
+      const ids = [];
+      for (const [ei, k] of sp.exercises.entries()) {
+        const ex = T.exercise(k);
+        const v = fd.get(`s${si}e${ei}`);
+        if (v === 'skip') continue;
+        if (v.startsWith('m:')) {
+          ids.push(v.slice(2));
+          continue;
+        }
+        const alt = v === 'new:alt' && ex.alt;
+        const name = alt ? ex.alt[0] : ex.machine;
+        if (!created.has(name)) {
+          const free = alt && L.FREE_TYPES.includes(ex.alt[1]);
+          const m = {
+            id: db.uid(),
+            qrCode: '',
+            name,
+            settings: free ? [] : DEFAULT_SETTINGS.map((label) => ({ label, value: '' })),
+            notes: '',
+            categories: [ex.cat, ...(free ? ['Freie Gewichte'] : [])],
+            load: { type: alt ? ex.alt[1] : 'kg' },
+            createdAt: new Date().toISOString(),
+          };
+          await db.saveMachine(m);
+          created.set(name, m.id);
+          newCount++;
+        }
+        ids.push(created.get(name));
+      }
+      let name = sp.name;
+      for (let i = 2; existingNames.has(name); i++) name = `${sp.name} (${i})`;
+      existingNames.add(name);
+      await db.saveSplit({ id: db.uid(), name, note: sp.note, machineIds: [...new Set(ids)], createdAt: new Date().toISOString() });
+    }
+    toast(`${tpl.splits.length} Splits angelegt${newCount ? `, ${newCount} neue Geräte` : ''} ✓`, 3500);
+    location.replace('#/');
+  };
 }
 
 // ---------- Statistik ----------
