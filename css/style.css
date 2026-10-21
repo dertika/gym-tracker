@@ -385,3 +385,25 @@ legend { padding: 0 6px; color: var(--muted); font-size: 0.95rem; }
   cursor: pointer;
 }
 .pick small { color: var(--muted); font-size: 0.8rem; }
+
+/* ---------- Split-Vorlagen ---------- */
+.template-card { display: block; color: var(--text); text-decoration: none; }
+.template-card h2 { color: var(--accent); text-transform: none; letter-spacing: 0; font-size: 1.05rem; }
+.template-card p { margin: 6px 0 0; font-size: 0.92rem; }
+.template-card .hint { text-align: left; }
+.tpl-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.tpl-ex { display: flex; flex-direction: column; margin-bottom: 4px; }
+.tpl-ex small { color: var(--muted); font-size: 0.8rem; }
+.tpl-list select {
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--surface-2);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 16px;
+}
+.split-note { text-align: left; margin: 0; }
+.splits .row .btn { flex: 1; }
