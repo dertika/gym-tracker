@@ -9,6 +9,8 @@ const view = document.getElementById('view');
 const titleEl = document.getElementById('title');
 const backBtn = document.getElementById('back');
 let cleanup = null;
+// Wird ein Gerät aus einem Split geöffnet, führen Zurück und „Training speichern“ wieder dorthin.
+let returnSplit = null;
 
 // ---------- Helfer ----------
 
@@ -131,6 +133,9 @@ const routes = [
   [/^#\/stats$/, statsView],
   [/^#\/inbox(?:\?data=(.*))?$/, (data) => inbox(data ? decodeURIComponent(data) : '')],
   [/^#\/watch-help$/, watchHelp],
+  [/^#\/split\/new$/, () => editSplit(null)],
+  [/^#\/split\/([^/]+)$/, splitView],
+  [/^#\/split\/([^/]+)\/edit$/, (id) => editSplit(id)],
 ];
 
 async function render() {
@@ -161,8 +166,12 @@ window.addEventListener('hashchange', render);
 
 async function home() {
   setHeader('Gym Tracker');
+  returnSplit = null;
   const machines = await db.getMachines();
   const sessions = await db.getAllSessions();
+  const splits = await db.getSplits();
+  const today = todayIso();
+  const doneToday = new Set(sessions.filter((s) => s.date === today).map((s) => s.machineId));
   const last = {};
   sessions.forEach((s) => {
     if (!last[s.machineId] || s.date > last[s.machineId].date) last[s.machineId] = s;
@@ -175,6 +184,27 @@ async function home() {
     <a class="btn primary big" href="#/scan">
       <span class="btn-icon">⌗</span> Gerät scannen
     </a>
+    ${
+      splits.length
+        ? `<section class="splits">
+            <h2 class="section-title">Splits</h2>
+            <ul class="list">
+              ${splits
+                .map((sp) => {
+                  const list = watch.splitMachines(sp, machines);
+                  const doneN = list.filter((m) => doneToday.has(m.id)).length;
+                  const lastDate = sessions.filter((s) => sp.machineIds.includes(s.machineId)).reduce((a, s) => (s.date > a ? s.date : a), '');
+                  return `<li><a href="#/split/${sp.id}">
+                    <div class="li-main"><strong>${esc(sp.name)}</strong><small>${list.length} ${list.length === 1 ? 'Gerät' : 'Geräte'}${lastDate ? ` · zuletzt ${fmtDate(lastDate)}` : ''}</small></div>
+                    <div class="li-side">${doneN ? `<span class="${doneN === list.length ? 'up' : ''}">${doneN}/${list.length} ✓</span><small>heute</small>` : ''}</div>
+                  </a></li>`;
+                })
+                .join('')}
+            </ul>
+            <a class="btn ghost small" href="#/split/new">+ Split anlegen</a>
+          </section>`
+        : ''
+    }
     ${
       categories.length
         ? `<div class="chips" id="cat-filter" role="group" aria-label="Kategorie">
@@ -211,6 +241,7 @@ async function home() {
     ${machines.length ? `<a class="btn ghost" href="#/inbox">⌚ Watch-Einträge einfügen</a>` : ''}
     <a class="btn ghost" href="#/new">+ Gerät ohne QR-Code anlegen</a>
     <a class="btn ghost" href="#/new?free=1">+ Freie Übung anlegen (Hanteln, Körpergewicht)</a>
+    ${!splits.length && machines.length ? `<a class="btn ghost" href="#/split/new">+ Split anlegen (Trainingsplan)</a>` : ''}
   `;
 
   const search = document.getElementById('search');
@@ -346,7 +377,7 @@ async function machineDetail(id) {
   const m = await db.getMachine(id);
   if (!m) return go('#/');
   const sessions = await db.getSessions(id);
-  setHeader(m.name, '#/');
+  setHeader(m.name, returnSplit ? `#/split/${returnSplit}` : '#/');
   const load = loadOf(m);
   const last = sessions[0];
   const best = sessions.length ? Math.max(...sessions.map(load.hasWeight ? maxWeight : st.sessionMaxReps)) : null;
@@ -804,7 +835,7 @@ async function logSession(machineId, sessionId) {
     } else {
       toast('Training gespeichert 💪');
     }
-    location.replace(`#/m/${machineId}`);
+    location.replace(returnSplit ? `#/split/${returnSplit}` : `#/m/${machineId}`);
   };
 
   const del = document.getElementById('delete');
@@ -812,7 +843,149 @@ async function logSession(machineId, sessionId) {
     del.onclick = async () => {
       if (!confirm('Dieses Training löschen?')) return;
       await db.deleteSession(existing.id);
-      location.replace(`#/m/${machineId}`);
+      location.replace(returnSplit ? `#/split/${returnSplit}` : `#/m/${machineId}`);
+    };
+}
+
+// ---------- Splits ----------
+
+async function splitView(id) {
+  const split = await db.getSplit(id);
+  if (!split) return go('#/');
+  returnSplit = id;
+  setHeader(split.name, '#/');
+  const machines = watch.splitMachines(split, await db.getMachines());
+  const sessions = await db.getAllSessions();
+  const today = todayIso();
+  const last = {};
+  sessions.forEach((s) => {
+    if (!last[s.machineId] || s.date > last[s.machineId].date) last[s.machineId] = s;
+  });
+  const done = new Set(sessions.filter((s) => s.date === today).map((s) => s.machineId));
+  const doneN = machines.filter((m) => done.has(m.id)).length;
+
+  view.innerHTML = `
+    ${
+      machines.length
+        ? `<p class="info">Heute erledigt: <strong>${doneN} von ${machines.length}</strong>${doneN === machines.length ? ' – stark! 💪' : ''}</p>
+           <ol class="list split-list">
+             ${machines
+               .map((m, i) => {
+                 const load = loadOf(m);
+                 const settings = m.settings.filter((x) => String(x.value ?? '').trim());
+                 return `<li class="${done.has(m.id) ? 'done' : ''}"><a href="#/m/${m.id}">
+                   <span class="split-no">${done.has(m.id) ? '✓' : i + 1}</span>
+                   <div class="li-main">
+                     <strong>${esc(m.name)}</strong>
+                     ${settings.length ? `<small>${esc(settings.map((x) => `${x.label}: ${x.value}`).join(' · '))}</small>` : ''}
+                     <small>${last[m.id] ? `Zuletzt ${fmtDate(last[m.id].date)}: ${esc(setsSummary(last[m.id].sets, load))}` : 'Noch kein Training'}</small>
+                   </div>
+                 </a></li>`;
+               })
+               .join('')}
+           </ol>`
+        : `<p class="empty">Dieser Split hat noch keine Geräte.</p>`
+    }
+    <a class="btn ghost" href="#/split/${id}/edit">Split bearbeiten</a>
+  `;
+}
+
+async function editSplit(id) {
+  const existing = id ? await db.getSplit(id) : null;
+  if (id && !existing) return go('#/');
+  const split = existing || { id: db.uid(), name: '', machineIds: [], createdAt: new Date().toISOString() };
+  const all = await db.getMachines();
+  const byId = new Map(all.map((m) => [m.id, m]));
+  let ids = split.machineIds.filter((x) => byId.has(x));
+  const categories = watch.allCategories(all);
+  let cat = '';
+  setHeader(existing ? 'Split bearbeiten' : 'Neuer Split', existing ? `#/split/${id}` : '#/');
+
+  view.innerHTML = `
+    <form id="form" class="form" autocomplete="off">
+      <label>Name des Splits
+        <input name="name" required placeholder="z. B. Push, Pull, Beine" value="${esc(split.name)}" autocapitalize="sentences">
+      </label>
+      <fieldset>
+        <legend>Geräte in Reihenfolge</legend>
+        <ol class="split-edit" id="chosen"></ol>
+      </fieldset>
+      <fieldset>
+        <legend>Geräte hinzufügen</legend>
+        ${
+          categories.length
+            ? `<div class="chips" id="add-filter">${['', ...categories].map((c) => `<button type="button" class="chip" data-cat="${esc(c)}" aria-pressed="${c === ''}">${c ? esc(c) : 'Alle'}</button>`).join('')}</div>`
+            : ''
+        }
+        <ul class="list compact" id="available"></ul>
+      </fieldset>
+      <button class="btn primary big" type="submit">Speichern</button>
+      ${existing ? `<button type="button" class="btn danger" id="delete">Split löschen</button>` : ''}
+    </form>
+  `;
+
+  const chosenEl = document.getElementById('chosen');
+  const availEl = document.getElementById('available');
+  const draw = () => {
+    chosenEl.innerHTML = ids.length
+      ? ids
+          .map(
+            (mid, i) => `<li data-id="${mid}">
+              <span class="split-no">${i + 1}</span>
+              <span class="name">${esc(byId.get(mid).name)}</span>
+              <button type="button" class="icon-btn" data-act="up" aria-label="Nach oben" ${i === 0 ? 'disabled' : ''}>↑</button>
+              <button type="button" class="icon-btn" data-act="down" aria-label="Nach unten" ${i === ids.length - 1 ? 'disabled' : ''}>↓</button>
+              <button type="button" class="icon-btn" data-act="remove" aria-label="Entfernen">✕</button>
+            </li>`
+          )
+          .join('')
+      : '<li class="empty">Noch keine Geräte – unten antippen zum Hinzufügen.</li>';
+    const rest = all.filter((m) => !ids.includes(m.id) && (!cat || (m.categories || []).includes(cat)));
+    availEl.innerHTML =
+      rest.map((m) => `<li><button type="button" class="pick" data-id="${m.id}"><span>+ ${esc(m.name)}</span>${m.categories?.length ? `<small>${esc(m.categories.join(' · '))}</small>` : ''}</button></li>`).join('') ||
+      '<li class="empty">Keine weiteren Geräte.</li>';
+  };
+  draw();
+
+  chosenEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-act]');
+    if (!btn) return;
+    const i = ids.indexOf(btn.closest('li').dataset.id);
+    if (btn.dataset.act === 'remove') ids.splice(i, 1);
+    if (btn.dataset.act === 'up' && i > 0) [ids[i - 1], ids[i]] = [ids[i], ids[i - 1]];
+    if (btn.dataset.act === 'down' && i < ids.length - 1) [ids[i + 1], ids[i]] = [ids[i], ids[i + 1]];
+    draw();
+  });
+  availEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('.pick');
+    if (!btn) return;
+    ids.push(btn.dataset.id);
+    draw();
+  });
+  const filter = document.getElementById('add-filter');
+  if (filter)
+    filter.addEventListener('click', (e) => {
+      const chip = e.target.closest('.chip');
+      if (!chip) return;
+      cat = chip.dataset.cat;
+      filter.querySelectorAll('.chip').forEach((c) => c.setAttribute('aria-pressed', c === chip));
+      draw();
+    });
+
+  document.getElementById('form').onsubmit = async (e) => {
+    e.preventDefault();
+    const name = new FormData(e.target).get('name').trim();
+    await db.saveSplit({ ...split, name, machineIds: ids });
+    toast('Split gespeichert');
+    location.replace(`#/split/${split.id}`);
+  };
+  const del = document.getElementById('delete');
+  if (del)
+    del.onclick = async () => {
+      if (!confirm(`Split „${split.name}“ löschen? Geräte und Trainings bleiben erhalten.`)) return;
+      await db.deleteSplit(split.id);
+      toast('Split gelöscht');
+      location.replace('#/');
     };
 }
 
@@ -1105,12 +1278,12 @@ function watchHelp() {
     </section>
 
     <section class="card prose">
-      <h2>Ein Kurzbefehl pro Kategorie</h2>
-      <p>Damit auf der Watch nur die Geräte des Trainingstags erscheinen (z. B. Beine):</p>
+      <h2>Ein Kurzbefehl pro Split oder Kategorie</h2>
+      <p>Damit auf der Watch nur die Geräte des Trainingstags erscheinen (z. B. Split „Push“ oder Kategorie „Beine“):</p>
       <ol>
-        <li>Am Gerät unter „Gerät bearbeiten“ Kategorien vergeben.</li>
+        <li>Einen Split anlegen (Startseite → „+ Split anlegen“) oder am Gerät Kategorien vergeben. Bei Splits erscheinen die Geräte auf der Watch nummeriert in deiner Reihenfolge.</li>
         <li>In der Kurzbefehle-App den Kurzbefehl „Training“ lange drücken → <strong>Duplizieren</strong> und umbenennen, z. B. „Training Beine“.</li>
-        <li>Hier in ⚙︎ auf <strong>„Liste ‚Beine‘ kopieren“</strong> tippen und im Duplikat die erste Text-Aktion ersetzen.</li>
+        <li>Hier in ⚙︎ auf <strong>„Split ‚Push‘ kopieren“</strong> bzw. <strong>„Liste ‚Beine‘ kopieren“</strong> tippen und im Duplikat die erste Text-Aktion ersetzen.</li>
         <li>Beim Duplikat ggf. „Auf Apple Watch zeigen“ wieder einschalten.</li>
       </ol>
       <p class="hint">Alle Kurzbefehle schreiben in dieselbe Liste „Gym Log“; der Import ordnet die Trainings über die Geräte-ID zu.</p>
@@ -1236,6 +1409,7 @@ async function settings() {
   setHeader('Einstellungen', '#/');
   const machines = await db.getMachines();
   const sessions = await db.getAllSessions();
+  const splits = await db.getSplits();
   const persisted = navigator.storage?.persisted ? await navigator.storage.persisted() : false;
 
   view.innerHTML = `
@@ -1255,6 +1429,9 @@ async function settings() {
       <h2>Apple Watch</h2>
       <p class="hint">Trainings per Kurzbefehl auf der Watch erfassen, ohne iPhone im Studio.</p>
       <p class="hint">Liste nach dem Training neu kopieren, damit „Zuletzt“ auf der Watch aktuell ist.</p>
+      ${splits
+        .map((sp) => `<button class="btn ghost copy-watch" data-split="${sp.id}">Split „${esc(sp.name)}“ kopieren (${watch.splitMachines(sp, machines).length})</button>`)
+        .join('')}
       ${watch
         .allCategories(machines)
         .map((c) => {
@@ -1278,12 +1455,15 @@ async function settings() {
   });
   view.querySelectorAll('.copy-watch').forEach((btn) => (btn.onclick = async () => {
     const cat = btn.dataset.cat || null;
-    const config = watch.buildWatchConfig(machines, lastByMachine, cat);
+    const split = btn.dataset.split ? splits.find((sp) => sp.id === btn.dataset.split) : null;
+    const config = split
+      ? watch.buildWatchConfig(watch.splitMachines(split, machines), lastByMachine, null, { numbered: true })
+      : watch.buildWatchConfig(machines, lastByMachine, cat);
     const json = JSON.stringify(config);
     const n = Object.keys(config).length;
     try {
       await navigator.clipboard.writeText(json);
-      toast(`${cat ? `„${cat}“` : 'Geräteliste'} kopiert (${n} Geräte)`);
+      toast(`${split ? `Split „${split.name}“` : cat ? `„${cat}“` : 'Geräteliste'} kopiert (${n} Geräte)`);
     } catch {
       prompt('Kopieren nicht möglich – bitte manuell kopieren:', json);
     }

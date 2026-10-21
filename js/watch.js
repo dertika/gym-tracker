@@ -10,13 +10,17 @@ const fmt = (n) => String(n).replace('.', ',');
 
 // Geräteliste für den Watch-Kurzbefehl: { "<Name>": { id, info } }.
 // Mit `category` nur die Geräte dieser Kategorie (für einen Kurzbefehl pro Trainingstag).
+// Mit `numbered` bekommen die Namen ein Präfix „1 · …“ in der übergebenen Reihenfolge (für Splits).
 // Doppelte Namen bekommen eine Nummer, weil die Namen in der Watch-Auswahl eindeutig sein müssen.
-export function buildWatchConfig(machines, lastSessionByMachine = {}, category = null) {
+export function buildWatchConfig(machines, lastSessionByMachine = {}, category = null, { numbered = false } = {}) {
   const out = {};
+  let n = 0;
   for (const m of machines) {
+    if (!m) continue;
     if (category && !(m.categories || []).includes(category)) continue;
-    let name = m.name.trim() || 'Gerät';
-    for (let i = 2; out[name]; i++) name = `${m.name.trim()} (${i})`;
+    let name = (numbered ? `${++n} · ` : '') + (m.name.trim() || 'Gerät');
+    const base = name;
+    for (let i = 2; out[name]; i++) name = `${base} (${i})`;
     const blocks = [];
     const filled = m.settings.filter((s) => String(s.value ?? '').trim());
     if (filled.length) blocks.push(filled.map((s) => `${s.label}: ${s.value}`).join('\n'));
@@ -41,6 +45,12 @@ export function buildWatchConfig(machines, lastSessionByMachine = {}, category =
     out[name] = { id: m.id, info: blocks.join('\n\n') || 'Keine Einstellungen' };
   }
   return out;
+}
+
+// Geräte eines Splits in dessen Reihenfolge (nicht mehr vorhandene Geräte werden übersprungen).
+export function splitMachines(split, machines) {
+  const byId = new Map(machines.map((m) => [m.id, m]));
+  return split.machineIds.map((id) => byId.get(id)).filter(Boolean);
 }
 
 // Alle verwendeten Kategorien, alphabetisch.

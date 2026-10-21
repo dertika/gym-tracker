@@ -134,7 +134,7 @@ export async function backup({ force = false } = {}) {
     setState({ pending: false });
     return false;
   }
-  const payload = JSON.stringify({ machines: data.machines, sessions: data.sessions });
+  const payload = JSON.stringify({ machines: data.machines, sessions: data.sessions, splits: data.splits || [] });
   const h = hash(payload);
   if (!force && getState().lastHash === h) {
     setState({ pending: false });
@@ -148,7 +148,7 @@ export async function backup({ force = false } = {}) {
     await gh(cfg, contentPath(cfg), {
       method: 'PUT',
       body: JSON.stringify({
-        message: `Sicherung ${when} (${data.machines.length} Geräte, ${data.sessions.length} Trainings)`,
+        message: `Sicherung ${when} (${data.machines.length} Geräte, ${data.sessions.length} Trainings, ${(data.splits || []).length} Splits)`,
         content: toBase64(JSON.stringify(data, null, 2)),
         ...(existing?.sha ? { sha: existing.sha } : {}),
       }),
@@ -174,7 +174,7 @@ export async function fetchBackup() {
 
 export async function restore(data) {
   await db.importAll(data);
-  const payload = JSON.stringify({ machines: data.machines, sessions: data.sessions });
+  const payload = JSON.stringify({ machines: data.machines, sessions: data.sessions, splits: data.splits || [] });
   setState({ pending: false, error: null, lastHash: hash(payload) });
 }
 
