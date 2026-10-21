@@ -1,6 +1,6 @@
 // Kleiner IndexedDB-Wrapper. Alle Daten bleiben lokal auf dem Gerät.
 const DB_NAME = 'gym-tracker';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 let dbPromise;
 
@@ -25,11 +25,18 @@ function open() {
     dbPromise = new Promise((resolve, reject) => {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = () => {
+        // Nur fehlende Stores anlegen, damit bestehende Daten beim Upgrade erhalten bleiben.
         const db = req.result;
-        const machines = db.createObjectStore('machines', { keyPath: 'id' });
-        machines.createIndex('qrCode', 'qrCode', { unique: false });
-        const sessions = db.createObjectStore('sessions', { keyPath: 'id' });
-        sessions.createIndex('machineId', 'machineId', { unique: false });
+        if (!db.objectStoreNames.contains('machines')) {
+          const machines = db.createObjectStore('machines', { keyPath: 'id' });
+          machines.createIndex('qrCode', 'qrCode', { unique: false });
+        }
+        if (!db.objectStoreNames.contains('sessions')) {
+          const sessions = db.createObjectStore('sessions', { keyPath: 'id' });
+          sessions.createIndex('machineId', 'machineId', { unique: false });
+        }
+        // v2: Splits (Trainingspläne mit geordneter Geräteliste)
+        if (!db.objectStoreNames.contains('splits')) db.createObjectStore('splits', { keyPath: 'id' });
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
@@ -87,11 +94,15 @@ export async function saveMachine(machine) {
 
 export async function deleteMachine(id) {
   const db = await open();
-  const tx = db.transaction(['machines', 'sessions'], 'readwrite');
+  const tx = db.transaction(['machines', 'sessions', 'splits'], 'readwrite');
   tx.objectStore('machines').delete(id);
   const idx = tx.objectStore('sessions').index('machineId');
   const keys = await promisify(idx.getAllKeys(id));
   keys.forEach((k) => tx.objectStore('sessions').delete(k));
+  const splits = await promisify(tx.objectStore('splits').getAll());
+  splits
+    .filter((sp) => sp.machineIds.includes(id))
+    .forEach((sp) => tx.objectStore('splits').put({ ...sp, machineIds: sp.machineIds.filter((m) => m !== id) }));
   await done(tx);
   changed();
 }
@@ -122,6 +133,28 @@ export async function deleteSession(id) {
   changed();
 }
 
+// ---- Splits ----
+
+export async function getSplits() {
+  const list = await promisify((await store('splits')).getAll());
+  return list.sort((a, b) => a.name.localeCompare(b.name, 'de'));
+}
+
+export async function getSplit(id) {
+  return promisify((await store('splits')).get(id));
+}
+
+export async function saveSplit(split) {
+  await promisify((await store('splits', 'readwrite')).put(split));
+  changed();
+  return split;
+}
+
+export async function deleteSplit(id) {
+  await promisify((await store('splits', 'readwrite')).delete(id));
+  changed();
+}
+
 // ---- Backup ----
 
 export async function exportAll() {
@@ -131,6 +164,7 @@ export async function exportAll() {
     exportedAt: new Date().toISOString(),
     machines: await getMachines(),
     sessions: await getAllSessions(),
+    splits: await getSplits(),
   };
 }
 
@@ -139,11 +173,14 @@ export async function importAll(data) {
     throw new Error('Keine gültige Gym-Tracker-Sicherung.');
   }
   const db = await open();
-  const tx = db.transaction(['machines', 'sessions'], 'readwrite');
+  const tx = db.transaction(['machines', 'sessions', 'splits'], 'readwrite');
   tx.objectStore('machines').clear();
   tx.objectStore('sessions').clear();
+  tx.objectStore('splits').clear();
   data.machines.forEach((m) => tx.objectStore('machines').put(m));
   data.sessions.forEach((s) => tx.objectStore('sessions').put(s));
+  // Ältere Sicherungen haben noch keine Splits.
+  (Array.isArray(data.splits) ? data.splits : []).forEach((sp) => tx.objectStore('splits').put(sp));
   await done(tx);
   changed();
 }
