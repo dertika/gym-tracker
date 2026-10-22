@@ -10,15 +10,18 @@ const fmt = (n) => String(n).replace('.', ',');
 
 // Geräteliste für den Watch-Kurzbefehl: { "<Name>": { id, info } }.
 // Mit `category` nur die Geräte dieser Kategorie (für einen Kurzbefehl pro Trainingstag).
-// Mit `numbered` bekommen die Namen ein Präfix „1 · …“ in der übergebenen Reihenfolge (für Splits).
+// Mit `numbered` bekommen die Namen ein Präfix „1 · …“ in der übergebenen Reihenfolge (für Splits);
+// `labels` gibt die Präfixe direkt vor (z. B. „3a“, „3b“ für Alternativen auf einem Platz).
 // Doppelte Namen bekommen eine Nummer, weil die Namen in der Watch-Auswahl eindeutig sein müssen.
-export function buildWatchConfig(machines, lastSessionByMachine = {}, category = null, { numbered = false } = {}) {
+export function buildWatchConfig(machines, lastSessionByMachine = {}, category = null, { numbered = false, labels = null } = {}) {
   const out = {};
   let n = 0;
-  for (const m of machines) {
+  for (const [idx, m] of machines.entries()) {
     if (!m) continue;
     if (category && !(m.categories || []).includes(category)) continue;
-    let name = (numbered ? `${++n} · ` : '') + (m.name.trim() || 'Gerät');
+    n++;
+    const prefix = labels ? `${labels[idx]} · ` : numbered ? `${n} · ` : '';
+    let name = prefix + (m.name.trim() || 'Gerät');
     const base = name;
     for (let i = 2; out[name]; i++) name = `${base} (${i})`;
     const blocks = [];
@@ -47,10 +50,40 @@ export function buildWatchConfig(machines, lastSessionByMachine = {}, category =
   return out;
 }
 
-// Geräte eines Splits in dessen Reihenfolge (nicht mehr vorhandene Geräte werden übersprungen).
-export function splitMachines(split, machines) {
+// Plätze eines Splits als Geräte-IDs. Ein Platz mit mehreren Geräten ist ein Entweder-oder.
+// Ältere Splits haben nur `machineIds` (ein Gerät pro Platz).
+export function slotIds(split) {
+  const raw = Array.isArray(split.slots) ? split.slots : (split.machineIds || []).map((id) => [id]);
+  return raw.map((slot) => (Array.isArray(slot) ? slot : [slot]).filter(Boolean)).filter((slot) => slot.length);
+}
+
+// Flache ID-Liste in Reihenfolge (für `machineIds`).
+export const slotsToIds = (slots) => [...new Set(slots.flat())];
+
+// Plätze mit Geräte-Objekten; nicht mehr vorhandene Geräte und leere Plätze fallen weg.
+export function splitSlots(split, machines) {
   const byId = new Map(machines.map((m) => [m.id, m]));
-  return split.machineIds.map((id) => byId.get(id)).filter(Boolean);
+  return slotIds(split)
+    .map((slot) => slot.map((id) => byId.get(id)).filter(Boolean))
+    .filter((slot) => slot.length);
+}
+
+// Geräte eines Splits in Reihenfolge (alle Alternativen nacheinander).
+export function splitMachines(split, machines) {
+  return splitSlots(split, machines).flat();
+}
+
+// Für die Watch-Liste: Geräte flach plus Präfixe „1“, „2a“, „2b“, „3“ …
+export function splitWatchEntries(split, machines) {
+  const list = [];
+  const labels = [];
+  splitSlots(split, machines).forEach((slot, i) =>
+    slot.forEach((m, j) => {
+      list.push(m);
+      labels.push(slot.length > 1 ? `${i + 1}${String.fromCharCode(97 + j)}` : `${i + 1}`);
+    })
+  );
+  return { machines: list, labels };
 }
 
 // Alle verwendeten Kategorien, alphabetisch.

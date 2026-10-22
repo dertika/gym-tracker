@@ -7,7 +7,7 @@ PWA zum Tracken des Trainings im Fitnessstudio:
 - **Training erfassen** als Sätze × Wiederholungen × Gewicht, vorausgefüllt mit dem letzten Training.
 - **Verlauf** pro Gerät mit Diagramm (Höchstgewicht, geschätztes 1RM oder Volumen), Rekorden und Fortschritt in %.
 - **Statistik** (📊): Trainingstage diesen Monat, Ø pro Woche, Wochen-Serie, Trainingskalender (Heatmap), Trainingstage und Volumen pro Woche, Fortschritt pro Gerät.
-- **Splits**: Trainingspläne mit eigener Geräte-Reihenfolge (z. B. Push, Pull, Beine), mit Abhakliste „heute erledigt“ und eigener Watch-Liste.
+- **Splits**: Trainingspläne mit eigener Geräte-Reihenfolge (z. B. Push, Pull, Beine), mit Abhakliste „heute erledigt“ und eigener Watch-Liste. Mehrere Geräte auf einem Platz sind ein Entweder-oder (z. B. Latzug oder Klimmzüge).
 - **Split-Vorlagen**: 2er-Split (Oberkörper/Unterkörper) und 3er-Split (Push/Pull/Beine) mit Übungsvorschlägen; vorhandene Geräte werden automatisch zugeordnet, fehlende neu angelegt.
 - **Kategorien** (z. B. Oberkörper, Beine; mehrere pro Gerät) zum Filtern der Geräteliste und für eigene Watch-Kurzbefehle pro Trainingstag.
 - **Freie Gewichte**: Übungen ohne Gerät mit Kurzhanteln (kg pro Hand), Langhantel (Scheiben pro Seite + Stange) oder Körpergewicht (nur Wiederholungen).
