@@ -126,6 +126,8 @@ const routes = [
   [/^#?\/?$/, home],
   [/^#\/scan$/, scan],
   [/^#\/new\?free=1$/, () => editMachine(null, '', { free: true })],
+  [/^#\/new\?also=(.*)$/, (qr) => editMachine(null, decodeURIComponent(qr), { shared: true })],
+  [/^#\/pick\?qr=(.*)$/, (qr) => pickByQr(decodeURIComponent(qr))],
   [/^#\/new(?:\?qr=(.*))?$/, (qr) => editMachine(null, qr ? decodeURIComponent(qr) : '')],
   [/^#\/m\/([^/]+)$/, machineDetail],
   [/^#\/m\/([^/]+)\/edit$/, (id) => editMachine(id)],
@@ -274,13 +276,40 @@ async function home() {
 // ---------- Scannen ----------
 
 async function handleCode(code) {
-  const machine = await db.findMachineByQr(code);
-  if (machine) {
-    if (navigator.vibrate) navigator.vibrate(50);
-    go(`#/m/${machine.id}`);
-  } else {
-    go(`#/new?qr=${encodeURIComponent(code)}`);
-  }
+  const machines = await db.findMachinesByQr(code);
+  if (machines.length && navigator.vibrate) navigator.vibrate(50);
+  if (machines.length === 1) go(`#/m/${machines[0].id}`);
+  else if (machines.length > 1) go(`#/pick?qr=${encodeURIComponent(code)}`);
+  else go(`#/new?qr=${encodeURIComponent(code)}`);
+}
+
+// Mehrere Übungen teilen sich einen QR-Code: nachfragen, welche gemeint ist.
+async function pickByQr(code) {
+  const machines = await db.findMachinesByQr(code);
+  if (machines.length === 1) return location.replace(`#/m/${machines[0].id}`);
+  setHeader('Welche Übung?', '#/');
+  const sessions = await db.getAllSessions();
+  const last = {};
+  sessions.forEach((s) => {
+    if (!last[s.machineId] || s.date > last[s.machineId].date) last[s.machineId] = s;
+  });
+  view.innerHTML = `
+    <p class="info">Dieser QR-Code gehört zu ${machines.length ? `${machines.length} Übungen` : 'keiner Übung'}. Welche machst du?</p>
+    <ul class="list">
+      ${machines
+        .map((m) => {
+          const settings = m.settings.filter((x) => String(x.value ?? '').trim());
+          return `<li><a href="#/m/${m.id}">
+            <div class="li-main"><strong>${esc(m.name)}</strong>
+              ${settings.length ? `<small>${esc(settings.map((x) => `${x.label}: ${x.value}`).join(' · '))}</small>` : ''}
+            </div>
+            <div class="li-side">${last[m.id] ? `<small>${fmtDate(last[m.id].date)}</small><span>${bestOf(loadOf(m), last[m.id])}</span>` : ''}</div>
+          </a></li>`;
+        })
+        .join('')}
+    </ul>
+    <a class="btn ghost" href="#/new?also=${encodeURIComponent(code)}">+ Weitere Übung für diesen QR-Code</a>
+  `;
 }
 
 async function scan() {
@@ -492,10 +521,10 @@ function settingRow(label = '', value = '') {
     </div>`;
 }
 
-async function editMachine(id, qr = '', { free = false } = {}) {
+async function editMachine(id, qr = '', { free = false, shared = false } = {}) {
   const existing = id ? await db.getMachine(id) : null;
   if (id && !existing) return go('#/');
-  if (!id && qr) {
+  if (!id && qr && !shared) {
     // Falls der Code zwischenzeitlich doch schon bekannt ist.
     const known = await db.findMachineByQr(qr);
     if (known) return go(`#/m/${known.id}`);
@@ -519,7 +548,13 @@ async function editMachine(id, qr = '', { free = false } = {}) {
 
   view.innerHTML = `
     <form id="form" class="form" autocomplete="off">
-      ${!existing && qr ? `<p class="info">Neuer QR-Code erkannt. Lege das Gerät einmalig an – beim nächsten Scan erscheinen die Einstellungen direkt.</p>` : ''}
+      ${
+        !existing && qr
+          ? shared
+            ? `<p class="info">Weitere Übung für diesen QR-Code. Beim Scannen fragt die App dann, welche Übung du machst.</p>`
+            : `<p class="info">Neuer QR-Code erkannt. Lege das Gerät einmalig an – beim nächsten Scan erscheinen die Einstellungen direkt.</p>`
+          : ''
+      }
       <label>${isFree ? 'Name der Übung' : 'Name des Geräts'}
         <input name="name" required placeholder="${isFree ? 'z. B. Bankdrücken' : 'z. B. Hip Adduction'}" value="${esc(m.name)}" autocapitalize="words">
       </label>
@@ -652,11 +687,8 @@ async function editMachine(id, qr = '', { free = false } = {}) {
     scanner
       .start(async (code) => {
         box.hidden = true;
-        const other = await db.findMachineByQr(code);
-        if (other && other.id !== m.id) {
-          toast(`Code gehört bereits zu „${other.name}“.`);
-          return;
-        }
+        const others = (await db.findMachinesByQr(code)).filter((o) => o.id !== m.id);
+        if (others.length && !confirm(`Dieser QR-Code gehört schon zu „${others.map((o) => o.name).join('“, „')}“. Auch für diese Übung verwenden? Beim Scannen wirst du dann gefragt, welche Übung du machst.`)) return;
         qrCode = code;
         document.getElementById('qr-value').textContent = code;
         toast('QR-Code übernommen');
