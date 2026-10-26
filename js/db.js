@@ -80,10 +80,15 @@ export async function getMachine(id) {
   return promisify((await store('machines')).get(id));
 }
 
-export async function findMachineByQr(code) {
-  if (!code) return undefined;
+// Alle Geräte mit diesem QR-Code (ein Code kann mehrere Übungen abbilden).
+export async function findMachinesByQr(code) {
+  if (!code) return [];
   const list = await promisify((await store('machines')).index('qrCode').getAll(code));
-  return list[0];
+  return list.sort((a, b) => a.name.localeCompare(b.name, 'de'));
+}
+
+export async function findMachineByQr(code) {
+  return (await findMachinesByQr(code))[0];
 }
 
 export async function saveMachine(machine) {
