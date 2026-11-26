@@ -28,6 +28,7 @@ const NOTE = '3 Sätze à 8–12 Wdh., 1–2 Min. Pause. Schaffst du überall 12
 export const TEMPLATES = [
   {
     id: 'upper-lower',
+    plan: '2er-Split',
     name: '2er-Split: Oberkörper / Unterkörper',
     desc: 'Für 2–4 Trainings pro Woche, z. B. Mo Oberkörper, Di Unterkörper, Do Oberkörper, Fr Unterkörper.',
     splits: [
@@ -37,6 +38,7 @@ export const TEMPLATES = [
   },
   {
     id: 'ppl',
+    plan: '3er-Split',
     name: '3er-Split: Push / Pull / Beine',
     desc: 'Für 3 Trainings pro Woche (z. B. Mo/Mi/Fr) oder 6, dann jeden Split zweimal.',
     splits: [
