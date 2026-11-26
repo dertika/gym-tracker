@@ -55,6 +55,19 @@ function setHeader(title, back) {
 
 const go = (hash) => (location.hash = hash);
 
+// Trainingspläne gruppieren Splits (z. B. „3er-Split“, „2er-Split“). Splits ohne Plan bilden die Gruppe ''.
+const planOf = (sp) => (sp.plan || '').trim();
+function plansOf(splits) {
+  const named = [...new Set(splits.map(planOf).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'de'));
+  return splits.some((sp) => !planOf(sp)) ? [...named, ''] : named;
+}
+// Aktiver Plan (pro Gerät gemerkt); fällt auf den ersten vorhandenen zurück.
+function activePlan(splits) {
+  const plans = plansOf(splits);
+  const saved = pref.get('plan');
+  return plans.includes(saved ?? '') ? saved ?? '' : plans[0] ?? '';
+}
+
 // Kleine Merk-Werte pro Gerät (z. B. gewählter Filter). Darf fehlen, z. B. im privaten Modus.
 const pref = {
   get(key) {
@@ -175,6 +188,8 @@ async function home() {
   const machines = await db.getMachines();
   const sessions = await db.getAllSessions();
   const splits = await db.getSplits();
+  const plans = plansOf(splits);
+  const plan = activePlan(splits);
   const today = todayIso();
   const doneToday = new Set(sessions.filter((s) => s.date === today).map((s) => s.machineId));
   const last = {};
@@ -192,9 +207,17 @@ async function home() {
     ${
       splits.length
         ? `<section class="splits">
-            <h2 class="section-title">Splits</h2>
+            <h2 class="section-title">Splits${plans.length > 1 || plan ? ` · ${esc(plan || 'Ohne Plan')}` : ''}</h2>
+            ${
+              plans.length > 1
+                ? `<div class="chips" id="plan-filter" role="group" aria-label="Trainingsplan">
+                    ${plans.map((pl) => `<button type="button" class="chip" data-plan="${esc(pl)}" aria-pressed="${pl === plan}">${pl ? esc(pl) : 'Ohne Plan'}</button>`).join('')}
+                  </div>`
+                : ''
+            }
             <ul class="list">
               ${splits
+                .filter((sp) => planOf(sp) === plan)
                 .map((sp) => {
                   const list = watch.splitSlots(sp, machines);
                   const doneN = list.filter((slot) => slot.some((m) => doneToday.has(m.id))).length;
@@ -210,6 +233,7 @@ async function home() {
               <a class="btn ghost small" href="#/split/new">+ Split anlegen</a>
               <a class="btn ghost small" href="#/templates">Vorlagen</a>
             </div>
+            ${!plan ? `<button type="button" class="btn ghost small" id="assign-plan">Diese Splits einem Trainingsplan zuordnen …</button>` : ''}
           </section>`
         : ''
     }
@@ -230,8 +254,8 @@ async function home() {
             <div class="li-main">
               <strong>${esc(m.name)}</strong>
               ${
-                m.settings.length
-                  ? `<small>${esc(m.settings.map((s) => `${s.label}: ${s.value}`).join(' · '))}</small>`
+                m.settings.some((s) => String(s.value ?? '').trim())
+                  ? `<small>${esc(m.settings.filter((s) => String(s.value ?? '').trim()).map((s) => `${s.label}: ${s.value}`).join(' · '))}</small>`
                   : L.FREE_TYPES.includes(L.loadType(m))
                     ? ''
                     : '<small>Keine Einstellungen</small>'
@@ -271,6 +295,23 @@ async function home() {
     };
   });
   applyFilter();
+
+  view.querySelectorAll('#plan-filter .chip').forEach((chip) => {
+    chip.onclick = () => {
+      pref.set('plan', chip.dataset.plan);
+      home();
+    };
+  });
+  const assign = document.getElementById('assign-plan');
+  if (assign)
+    assign.onclick = async () => {
+      const name = (prompt('Name des Trainingsplans für diese Splits, z. B. „3er-Split“:', '3er-Split') || '').trim();
+      if (!name) return;
+      for (const sp of splits.filter((x) => !planOf(x))) await db.saveSplit({ ...sp, plan: name });
+      pref.set('plan', name);
+      toast(`Splits dem Plan „${name}“ zugeordnet`);
+      home();
+    };
 }
 
 // ---------- Scannen ----------
@@ -944,6 +985,7 @@ async function editSplit(id) {
   if (id && !existing) return go('#/');
   const split = existing || { id: db.uid(), name: '', slots: [], machineIds: [], createdAt: new Date().toISOString() };
   const all = await db.getMachines();
+  const allSplits = await db.getSplits();
   const byId = new Map(all.map((m) => [m.id, m]));
   // Plätze als ID-Listen; ein Platz mit mehreren Geräten ist ein Entweder-oder.
   let slots = watch.slotIds(split).map((slot) => slot.filter((x) => byId.has(x))).filter((slot) => slot.length);
@@ -960,6 +1002,10 @@ async function editSplit(id) {
       ${existing ? '' : `<a class="btn ghost small" href="#/templates">📋 Stattdessen eine Vorlage verwenden</a>`}
       <label>Notiz (optional)
         <input name="note" placeholder="z. B. 3 × 8–12 Wdh." value="${esc(split.note)}">
+      </label>
+      <label>Trainingsplan (optional)
+        <input name="plan" list="plan-list" placeholder="z. B. 2er-Split" value="${esc(existing ? planOf(split) : activePlan(allSplits))}" autocapitalize="off">
+        <datalist id="plan-list">${plansOf(allSplits).filter(Boolean).map((pl) => `<option value="${esc(pl)}">`).join('')}</datalist>
       </label>
       <fieldset>
         <legend>Übungen in Reihenfolge</legend>
@@ -1062,7 +1108,9 @@ async function editSplit(id) {
   document.getElementById('form').onsubmit = async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
-    await db.saveSplit({ ...split, name: fd.get('name').trim(), note: fd.get('note').trim(), slots, machineIds: watch.slotsToIds(slots) });
+    const planName = fd.get('plan').trim();
+    await db.saveSplit({ ...split, name: fd.get('name').trim(), note: fd.get('note').trim(), plan: planName, slots, machineIds: watch.slotsToIds(slots) });
+    pref.set('plan', planName);
     toast('Split gespeichert');
     location.replace(`#/split/${split.id}`);
   };
@@ -1103,6 +1151,7 @@ async function templateApply(tid) {
 
   view.innerHTML = `
     <p class="info">Ordne jeder Übung ein Gerät zu. Passende vorhandene Geräte sind schon ausgewählt. Neue Geräte kannst du später über „Gerät bearbeiten“ mit dem QR-Code verknüpfen.</p>
+    <p class="hint split-note">Die Splits kommen in den Trainingsplan <strong>„${esc(tpl.plan)}“</strong>. Deine anderen Splits bleiben erhalten; auf der Startseite wechselst du zwischen den Plänen.</p>
     <form id="form" class="form">
       ${tpl.splits
         .map(
@@ -1140,7 +1189,7 @@ async function templateApply(tid) {
     e.submitter && (e.submitter.disabled = true);
     const fd = new FormData(e.target);
     const created = new Map(); // gleiche neue Geräte nur einmal anlegen (z. B. Bauch in zwei Splits)
-    const existingNames = new Set((await db.getSplits()).map((sp) => sp.name));
+    const existingNames = new Set((await db.getSplits()).filter((sp) => planOf(sp) === tpl.plan).map((sp) => sp.name));
     let newCount = 0;
     for (const [si, sp] of tpl.splits.entries()) {
       const slots = [];
@@ -1182,8 +1231,9 @@ async function templateApply(tid) {
       for (let i = 2; existingNames.has(name); i++) name = `${sp.name} (${i})`;
       existingNames.add(name);
       const unique = slots.map((slot) => [...new Set(slot)]);
-      await db.saveSplit({ id: db.uid(), name, note: sp.note, slots: unique, machineIds: watch.slotsToIds(unique), createdAt: new Date().toISOString() });
+      await db.saveSplit({ id: db.uid(), name, note: sp.note, plan: tpl.plan, slots: unique, machineIds: watch.slotsToIds(unique), createdAt: new Date().toISOString() });
     }
+    pref.set('plan', tpl.plan);
     toast(`${tpl.splits.length} Splits angelegt${newCount ? `, ${newCount} neue Geräte` : ''} ✓`, 3500);
     location.replace('#/');
   };
@@ -1630,7 +1680,9 @@ async function settings() {
       <p class="hint">Trainings per Kurzbefehl auf der Watch erfassen, ohne iPhone im Studio.</p>
       <p class="hint">Liste nach dem Training neu kopieren, damit „Zuletzt“ auf der Watch aktuell ist.</p>
       ${splits
-        .map((sp) => `<button class="btn ghost copy-watch" data-split="${sp.id}">Split „${esc(sp.name)}“ kopieren (${watch.splitMachines(sp, machines).length})</button>`)
+        .slice()
+        .sort((a, b) => (planOf(a) === activePlan(splits) ? 0 : 1) - (planOf(b) === activePlan(splits) ? 0 : 1))
+        .map((sp) => `<button class="btn ghost copy-watch" data-split="${sp.id}">Split „${esc(sp.name)}“${planOf(sp) ? ` (${esc(planOf(sp))})` : ''} kopieren (${watch.splitMachines(sp, machines).length})</button>`)
         .join('')}
       ${watch
         .allCategories(machines)
